@@ -1,12 +1,13 @@
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::config::clients::{build_args, get_client};
-use crate::config::generator::ValidatorConfig;
-use crate::config::spec::DevnetSpec;
+use crate::config::{
+    clients::{build_args, get_client},
+    generator::ValidatorConfig,
+    spec::DevnetSpec,
+};
 
 /// Top-level Helm values structure.
 #[derive(Debug, Serialize, Deserialize)]
@@ -63,10 +64,7 @@ pub struct PrometheusValues {
 ///
 /// Each validator entry becomes its own StatefulSet with replicas=1,
 /// ensuring every pod gets its correct per-pod args (node-id, keys, etc).
-pub fn generate_helm_values(
-    spec: &DevnetSpec,
-    vc: &ValidatorConfig,
-) -> Result<HelmValues> {
+pub fn generate_helm_values(spec: &DevnetSpec, vc: &ValidatorConfig) -> Result<HelmValues> {
     let mut clients = Vec::new();
 
     let multi_subnet = spec.subnets > 1;

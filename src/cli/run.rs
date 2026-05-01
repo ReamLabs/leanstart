@@ -1,17 +1,22 @@
-use std::path::PathBuf;
-use std::process::Command;
-use std::{fs, thread, time};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    thread, time,
+};
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
 
-use crate::config::clients::{get_client, CLIENTS};
-use crate::config::generator::{
-    generate_validator_config, write_validator_config, ValidatorConfig,
+use crate::{
+    config::{
+        clients::{get_client, CLIENTS},
+        generator::{generate_validator_config, write_validator_config, ValidatorConfig},
+        spec::{parse_client_spec, ClientAllocation, DevnetSpec, MAX_SUBNETS},
+    },
+    k8s::values::{generate_helm_values, generate_pod_secrets, write_helm_values},
+    keys::keygen::write_node_keys,
 };
-use crate::config::spec::{parse_client_spec, ClientAllocation, DevnetSpec, MAX_SUBNETS};
-use crate::k8s::values::{generate_helm_values, generate_pod_secrets, write_helm_values};
-use crate::keys::keygen::write_node_keys;
 
 /// Run a devnet with the specified clients.
 ///
@@ -415,8 +420,8 @@ fn setup_k8s_resources(
     context: &str,
     namespace: &str,
     vc: &ValidatorConfig,
-    genesis_dir: &PathBuf,
-    output_dir: &PathBuf,
+    genesis_dir: &Path,
+    output_dir: &Path,
 ) -> Result<()> {
     let kc = |args: &[&str]| -> Result<bool> {
         let status = Command::new("kubectl")
@@ -591,12 +596,7 @@ fn setup_k8s_resources(
 }
 
 /// Install the Helm chart.
-fn helm_install(
-    context: &str,
-    namespace: &str,
-    chart_dir: &PathBuf,
-    output_dir: &PathBuf,
-) -> Result<()> {
+fn helm_install(context: &str, namespace: &str, chart_dir: &Path, output_dir: &Path) -> Result<()> {
     let values_path = output_dir.join("helm-values.yaml");
 
     // Disable prometheus (no CRDs on kind)
@@ -961,7 +961,7 @@ fn start_log_streaming(
     context: &str,
     namespace: &str,
     pods: &[(String, String)],
-    output_dir: &PathBuf,
+    output_dir: &Path,
 ) -> Result<()> {
     let logs_dir = output_dir.join("logs");
     fs::create_dir_all(&logs_dir)?;
@@ -1007,7 +1007,7 @@ fn snapshot_previous_logs(
     context: &str,
     namespace: &str,
     pods: &[(String, String)],
-    output_dir: &PathBuf,
+    output_dir: &Path,
 ) {
     let logs_dir = output_dir.join("logs");
     let _ = fs::create_dir_all(&logs_dir);

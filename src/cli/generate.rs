@@ -3,11 +3,15 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Args;
 
-use crate::config::generator::{generate_validator_config, write_validator_config};
-use crate::config::spec::{DevnetSpec, MAX_SUBNETS, parse_client_spec};
-use crate::genesis::runner::{append_genesis_validators, run_genesis_tool, write_config_yaml};
-use crate::k8s::values::{generate_helm_values, generate_pod_secrets, write_helm_values};
-use crate::keys::keygen::{generate_hash_sig_keys, write_node_keys};
+use crate::{
+    config::{
+        generator::{generate_validator_config, write_validator_config},
+        spec::{parse_client_spec, DevnetSpec, MAX_SUBNETS},
+    },
+    genesis::runner::{append_genesis_validators, run_genesis_tool, write_config_yaml},
+    k8s::values::{generate_helm_values, generate_pod_secrets, write_helm_values},
+    keys::keygen::{generate_hash_sig_keys, write_node_keys},
+};
 
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
@@ -36,7 +40,10 @@ pub struct GenerateArgs {
     pub key_type: String,
 
     /// Hex-encoded 32-byte seed for deterministic key generation.
-    #[arg(long, default_value = "0000000000000000000000000000000000000000000000000000000000000001")]
+    #[arg(
+        long,
+        default_value = "0000000000000000000000000000000000000000000000000000000000000001"
+    )]
     pub seed: String,
 
     /// Seconds until genesis time from now.
@@ -156,6 +163,9 @@ fn run_inner(args: GenerateArgs) -> Result<()> {
     println!("==> Generating pod secret manifests...");
     generate_pod_secrets(&vc, &spec.namespace, &args.output_dir)?;
 
-    println!("\nGeneration complete. Output in {}", args.output_dir.display());
+    println!(
+        "\nGeneration complete. Output in {}",
+        args.output_dir.display()
+    );
     Ok(())
 }

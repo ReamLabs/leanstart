@@ -24,8 +24,12 @@ pub fn run(args: StatusArgs) -> Result<()> {
 
     let output = Command::new("kubectl")
         .args([
-            "get", "pods", "-n", &args.namespace,
-            "-o", "wide",
+            "get",
+            "pods",
+            "-n",
+            &args.namespace,
+            "-o",
+            "wide",
             "--sort-by=.metadata.name",
         ])
         .output()?;

@@ -1,8 +1,6 @@
-use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::{fs, path::Path, process::Command};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -26,7 +24,11 @@ pub fn write_node_keys(
         let path = output_dir.join(format!("{name}.key"));
         fs::write(&path, privkey)?;
     }
-    println!("Wrote {} node key files to {}", validators.len(), output_dir.display());
+    println!(
+        "Wrote {} node key files to {}",
+        validators.len(),
+        output_dir.display()
+    );
     Ok(())
 }
 

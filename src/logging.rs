@@ -5,13 +5,15 @@
 //! terminal fd and (b) the log file. This captures Rust `println!`/`eprintln!`
 //! AND any subprocess output that inherits the parent's stdout/stderr.
 
-use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::os::fd::FromRawFd;
-use std::path::{Path, PathBuf};
-use std::thread;
+use std::{
+    fs::{self, File},
+    io::{Read, Write},
+    os::fd::FromRawFd,
+    path::{Path, PathBuf},
+    thread,
+};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 /// Initialise the tee. Subsequent stdout/stderr writes go to both the terminal
 /// and `<output_dir>/leanstart-run.log`. Returns the log file path so callers

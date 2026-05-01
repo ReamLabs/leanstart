@@ -23,8 +23,11 @@ pub fn run(args: DestroyArgs) -> Result<()> {
     println!("==> Scaling down all pods...");
     let _ = Command::new("kubectl")
         .args([
-            "scale", "statefulset", "--all",
-            "-n", &args.namespace,
+            "scale",
+            "statefulset",
+            "--all",
+            "-n",
+            &args.namespace,
             "--replicas=0",
         ])
         .status();
@@ -46,7 +49,10 @@ pub fn run(args: DestroyArgs) -> Result<()> {
     if status.success() {
         println!("\nDestroyed cluster '{}'.", args.cluster);
     } else {
-        println!("\nNo kind cluster '{}' found (may already be deleted).", args.cluster);
+        println!(
+            "\nNo kind cluster '{}' found (may already be deleted).",
+            args.cluster
+        );
     }
 
     Ok(())

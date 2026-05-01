@@ -1,9 +1,11 @@
-use std::fs;
-use std::path::Path;
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fs,
+    path::Path,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde_yaml::Value;
 
 use crate::config::generator::ValidatorConfig;
@@ -90,10 +92,7 @@ pub fn run_genesis_tool(output_dir: &Path) -> Result<()> {
 /// the hash-sig-keys manifest, in validator-config.yaml order.
 ///
 /// Each validator entry's pubkey is repeated `count` times.
-pub fn append_genesis_validators(
-    vc: &ValidatorConfig,
-    output_dir: &Path,
-) -> Result<()> {
+pub fn append_genesis_validators(vc: &ValidatorConfig, output_dir: &Path) -> Result<()> {
     let manifest_path = output_dir.join("hash-sig-keys/validator-keys-manifest.yaml");
     let manifest_content = fs::read_to_string(&manifest_path)
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;

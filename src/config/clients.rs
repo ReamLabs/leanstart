@@ -97,8 +97,8 @@ pub fn get_client(name: &str) -> Option<&'static ClientDef> {
 /// - `hash_sig_key_index`: position in validator-config.yaml (for per-validator hash-sig)
 /// - `is_aggregator`: whether this pod is the aggregator
 /// - `attestation_committee_count`: optional override
-/// - `aggregate_subnet_ids`: CSV of subnet ids (e.g. "0,1,2") an aggregator must
-///   subscribe to. Currently honoured only by zeam.
+/// - `aggregate_subnet_ids`: CSV of subnet ids (e.g. "0,1,2") an aggregator must subscribe to.
+///   Currently honoured only by zeam.
 pub fn build_args(
     client: &ClientDef,
     node_id: &str,
