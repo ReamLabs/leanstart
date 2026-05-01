@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: init-scripts
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "lean-devnet.labels" . | nindent 4 }}
+data:
+  resolve-peers.sh: |
+    #!/bin/sh
+    set -e
+
+    echo "==> Copying shared config to working directory..."
+    cp /config-shared/* /config/ 2>/dev/null || true
+
+    echo "==> Copying genesis data from PVC..."
+    cp -r /genesis-data/* /config/ 2>/dev/null || true
+
+    echo "==> Copying node key from secret..."
+    # Pod name is e.g. "ream-0-0" (StatefulSet "ream-0", ordinal 0).
+    # Strip the trailing "-0" ordinal, then convert hyphens to underscores
+    # to get the node name matching validator-config.yaml (e.g. "ream_0").
+    STATEFULSET_NAME=$(echo "$POD_NAME" | sed 's/-[0-9]*$//')
+    NODE_NAME=$(echo "$STATEFULSET_NAME" | sed 's/-/_/g')
+    cp /keys/node.key "/config/${NODE_NAME}.key" 2>/dev/null || true
+
+    echo "==> Init complete. Files in /config:"
+    ls -la /config/
+    ls -la /config/hash-sig-keys/ 2>/dev/null || echo "  (no hash-sig-keys directory)"
