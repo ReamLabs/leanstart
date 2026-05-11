@@ -1,13 +1,12 @@
-use std::{fs, path::Path};
+use std::fs;
+use std::path::Path;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{
-    clients::{build_args, get_client},
-    generator::ValidatorConfig,
-    spec::DevnetSpec,
-};
+use crate::config::clients::{build_args, get_client};
+use crate::config::generator::ValidatorConfig;
+use crate::config::spec::DevnetSpec;
 
 /// Top-level Helm values structure.
 #[derive(Debug, Serialize, Deserialize)]
@@ -64,7 +63,10 @@ pub struct PrometheusValues {
 ///
 /// Each validator entry becomes its own StatefulSet with replicas=1,
 /// ensuring every pod gets its correct per-pod args (node-id, keys, etc).
-pub fn generate_helm_values(spec: &DevnetSpec, vc: &ValidatorConfig) -> Result<HelmValues> {
+pub fn generate_helm_values(
+    spec: &DevnetSpec,
+    vc: &ValidatorConfig,
+) -> Result<HelmValues> {
     let mut clients = Vec::new();
 
     let multi_subnet = spec.subnets > 1;
@@ -84,21 +86,20 @@ pub fn generate_helm_values(spec: &DevnetSpec, vc: &ValidatorConfig) -> Result<H
         None
     };
 
-    for (vc_idx, entry) in vc.validators.iter().enumerate() {
+    for entry in vc.validators.iter() {
         let client_def = get_client(&entry.client)
             .ok_or_else(|| anyhow::anyhow!("Unknown client: {}", entry.client))?;
 
         let args = build_args(
             client_def,
             &entry.name,
-            vc_idx,
             entry.is_aggregator,
             committee_count,
             aggregate_subnet_ids.as_deref(),
         );
 
         let image = if client_def.arch_aware {
-            format!("{}-amd64", client_def.image)
+            format!("{}-{}", client_def.image, image_arch_suffix())
         } else {
             client_def.image.to_string()
         };
@@ -132,6 +133,16 @@ pub fn generate_helm_values(spec: &DevnetSpec, vc: &ValidatorConfig) -> Result<H
         bootnode_count: spec.bootnode_count,
         prometheus: PrometheusValues { enabled: true },
     })
+}
+
+/// Image-tag arch suffix for clients that publish per-arch tags (e.g. qlean,
+/// lantern). Kind on Apple Silicon runs arm64 nodes, so requesting an amd64
+/// image leaves the pod in ImagePullBackOff.
+fn image_arch_suffix() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" | "arm64" => "arm64",
+        _ => "amd64",
+    }
 }
 
 /// Write Helm values to a YAML file.

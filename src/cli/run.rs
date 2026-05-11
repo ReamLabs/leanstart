@@ -1,22 +1,20 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-    thread, time,
-};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::{fs, thread, time};
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
 
-use crate::{
-    config::{
-        clients::{get_client, CLIENTS},
-        generator::{generate_validator_config, write_validator_config, ValidatorConfig},
-        spec::{parse_client_spec, ClientAllocation, DevnetSpec, MAX_SUBNETS},
-    },
-    k8s::values::{generate_helm_values, generate_pod_secrets, write_helm_values},
-    keys::keygen::write_node_keys,
+use crate::config::clients::{get_client, CLIENTS};
+use crate::config::generator::{
+    generate_validator_config, write_validator_config, ValidatorConfig,
 };
+use crate::config::spec::{parse_client_spec, ClientAllocation, DevnetSpec, MAX_SUBNETS};
+use crate::genesis::runner::{
+    append_genesis_validators, generate_annotated_validators, run_genesis_tool, write_config_yaml,
+};
+use crate::k8s::values::{generate_helm_values, generate_pod_secrets, write_helm_values};
+use crate::keys::keygen::{generate_hash_sig_keys, write_node_keys};
 
 /// Run a devnet with the specified clients.
 ///
@@ -41,10 +39,6 @@ pub struct RunArgs {
     /// Output directory for generated artifacts.
     #[arg(long, default_value = "./output")]
     pub output_dir: PathBuf,
-
-    /// Path to generate-genesis.sh script.
-    #[arg(long, env = "GENESIS_SCRIPT")]
-    pub genesis_script: Option<PathBuf>,
 
     /// Validators per pod.
     #[arg(long, default_value = "1")]
@@ -88,17 +82,23 @@ pub struct RunArgs {
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
+    // Each invocation writes to its own timestamped subdir under
+    // <output_dir>/runs/, with a `latest` symlink pointing at the newest one.
+    fs::create_dir_all(&args.output_dir)
+        .with_context(|| format!("Failed to create {}", args.output_dir.display()))?;
+    let run_dir = create_run_dir(&args.output_dir)?;
+
     // Tee all stdout/stderr (including subprocess output) to a log file so the
     // user has a complete record of the run.
-    let log_path = crate::logging::init(&args.output_dir)?;
+    let log_path = crate::logging::init(&run_dir)?;
     println!("Logging this run to {}", log_path.display());
 
-    let result = run_inner(args);
+    let result = run_inner(args, &run_dir);
     crate::logging::shutdown();
     result
 }
 
-fn run_inner(args: RunArgs) -> Result<()> {
+fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
     let clients: Vec<ClientAllocation> = args
         .clients
         .iter()
@@ -168,7 +168,6 @@ fn run_inner(args: RunArgs) -> Result<()> {
     };
 
     let genesis_dir = args.output_dir.join("genesis");
-    let genesis_script = find_genesis_script(&args.genesis_script)?;
     let chart_dir = find_chart_dir()?;
 
     // Step 1: Generate validator-config.yaml (with placeholder IPs)
@@ -183,9 +182,22 @@ fn run_inner(args: RunArgs) -> Result<()> {
         .collect();
     write_node_keys(&key_pairs, &genesis_dir)?;
 
-    // Step 2: Run genesis generation
+    // Step 2: Generate genesis artifacts (hash-sig keys + eth-beacon-genesis +
+    // GENESIS_VALIDATORS + annotated_validators.yaml). Pod IPs are placeholders
+    // here — fix_peer_ips re-runs the latter steps after pods get real IPs.
+    let total_validators_for_keys: u32 = vc.validators.iter().map(|v| v.count).sum();
+    println!(
+        "==> Generating hash-sig keys for {total_validators_for_keys} validators..."
+    );
+    generate_hash_sig_keys(total_validators_for_keys, args.active_epoch, &genesis_dir)?;
+
+    println!("==> Writing config.yaml...");
+    write_config_yaml(&vc, args.genesis_offset, &genesis_dir)?;
+
     println!("==> Running genesis generation...");
-    run_genesis_script(&genesis_script, &genesis_dir)?;
+    run_genesis_tool(&genesis_dir)?;
+    append_genesis_validators(&vc, &genesis_dir)?;
+    generate_annotated_validators(&genesis_dir)?;
 
     if args.config_only {
         println!("==> Generating Helm values...");
@@ -237,10 +249,10 @@ fn run_inner(args: RunArgs) -> Result<()> {
     if let Err(e) = wait_for_pods(&context, &args.namespace, &vc) {
         // Snapshot --previous logs for any pod that crashed so the user has a
         // record on disk before we bail (streaming hasn't started yet).
-        snapshot_previous_logs(&context, &args.namespace, &pod_names, &args.output_dir);
+        snapshot_previous_logs(&context, &args.namespace, &pod_names, run_dir);
         eprintln!(
-            "\nSome pods failed to become ready. Check {}/logs/ for details.",
-            args.output_dir.display()
+            "\nSome pods failed to become ready. Check {} for details.",
+            run_dir.display()
         );
         return Err(e);
     }
@@ -252,59 +264,60 @@ fn run_inner(args: RunArgs) -> Result<()> {
         &args.cluster,
         &vc,
         &genesis_dir,
-        &genesis_script,
+        args.genesis_offset,
         &pod_names,
     )?;
 
     // Stream logs AFTER fix_peer_ips: that step kills and restarts containers
     // to apply the corrected peer IPs, and we want to follow the post-restart
     // containers (the long-running ones), not the short-lived initial ones.
-    println!(
-        "==> Streaming logs to {}/logs/...",
-        args.output_dir.display()
-    );
-    start_log_streaming(&context, &args.namespace, &pod_names, &args.output_dir)?;
+    println!("==> Streaming logs to {}/...", run_dir.display());
+    start_log_streaming(&context, &args.namespace, &pod_names, run_dir)?;
 
     // Done
     println!("\nDevnet is running!");
-    println!("  Logs:    {}/logs/", args.output_dir.display());
+    println!("  Logs:    {}/", run_dir.display());
     println!("  Status:  leanstart status");
     println!("  Stop:    leanstart destroy");
 
     Ok(())
 }
 
-/// Find generate-genesis.sh in common locations.
-fn find_genesis_script(explicit: &Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(p) = explicit {
-        if p.exists() {
-            return Ok(p.clone());
-        }
-        bail!("Genesis script not found at {}", p.display());
-    }
+/// Create `<output_dir>/runs/<timestamp>/` and refresh the `latest` symlink
+/// to point at it.
+fn create_run_dir(output_dir: &Path) -> Result<PathBuf> {
+    let runs_root = output_dir.join("runs");
+    fs::create_dir_all(&runs_root)?;
 
-    let candidates = [
-        PathBuf::from("generate-genesis.sh"),
-        PathBuf::from("../lean-quickstart/generate-genesis.sh"),
-        PathBuf::from("../generate-genesis.sh"),
-    ];
-    for p in &candidates {
-        if p.exists() {
-            return Ok(fs::canonicalize(p)?);
-        }
-    }
+    let ts = run_timestamp();
+    let run_dir = runs_root.join(&ts);
+    fs::create_dir_all(&run_dir)?;
 
-    // Check PATH
-    if let Ok(output) = Command::new("which").arg("generate-genesis.sh").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return Ok(PathBuf::from(path));
-        }
-    }
+    let latest = runs_root.join("latest");
+    let _ = fs::remove_file(&latest);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&ts, &latest)?;
 
-    bail!(
-        "generate-genesis.sh not found. Set --genesis-script or GENESIS_SCRIPT env var.\n\
-         Looked in: ./generate-genesis.sh, ../lean-quickstart/generate-genesis.sh"
+    Ok(run_dir)
+}
+
+/// Local-time `YYYY-MM-DD_HH-MM-SS` for run-dir names. Uses libc rather than
+/// pulling in chrono.
+fn run_timestamp() -> String {
+    let now = time::SystemTime::now()
+        .duration_since(time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now, &mut tm) };
+    format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
     )
 }
 
@@ -329,20 +342,6 @@ fn find_chart_dir() -> Result<PathBuf> {
         }
     }
     bail!("Helm chart not found. Run from the leanstart project directory.")
-}
-
-/// Run generate-genesis.sh on the genesis directory.
-fn run_genesis_script(script: &PathBuf, genesis_dir: &PathBuf) -> Result<()> {
-    let status = Command::new(script)
-        .arg(genesis_dir)
-        .env("SKIP_KEY_GEN", "false")
-        .status()
-        .with_context(|| format!("Failed to run {}", script.display()))?;
-
-    if !status.success() {
-        bail!("Genesis generation failed");
-    }
-    Ok(())
 }
 
 /// Create a kind cluster if it doesn't already exist.
@@ -420,8 +419,8 @@ fn setup_k8s_resources(
     context: &str,
     namespace: &str,
     vc: &ValidatorConfig,
-    genesis_dir: &Path,
-    output_dir: &Path,
+    genesis_dir: &PathBuf,
+    output_dir: &PathBuf,
 ) -> Result<()> {
     let kc = |args: &[&str]| -> Result<bool> {
         let status = Command::new("kubectl")
@@ -596,7 +595,12 @@ fn setup_k8s_resources(
 }
 
 /// Install the Helm chart.
-fn helm_install(context: &str, namespace: &str, chart_dir: &Path, output_dir: &Path) -> Result<()> {
+fn helm_install(
+    context: &str,
+    namespace: &str,
+    chart_dir: &PathBuf,
+    output_dir: &PathBuf,
+) -> Result<()> {
     let values_path = output_dir.join("helm-values.yaml");
 
     // Disable prometheus (no CRDs on kind)
@@ -669,9 +673,9 @@ fn fix_peer_ips(
     context: &str,
     namespace: &str,
     cluster: &str,
-    _vc: &ValidatorConfig,
+    vc: &ValidatorConfig,
     genesis_dir: &PathBuf,
-    genesis_script: &PathBuf,
+    genesis_offset: u32,
     pods: &[(String, String)],
 ) -> Result<()> {
     let node = format!("{cluster}-control-plane");
@@ -715,7 +719,8 @@ fn fix_peer_ips(
     }
     fs::write(&vc_path, &result)?;
 
-    // Remove old genesis outputs and regenerate
+    // Remove old genesis outputs and regenerate (skip hash-sig keys — already
+    // present in genesis_dir/hash-sig-keys/ from the initial run).
     for f in &[
         "config.yaml",
         "genesis.ssz",
@@ -727,13 +732,10 @@ fn fix_peer_ips(
         let _ = fs::remove_file(genesis_dir.join(f));
     }
 
-    let status = Command::new(genesis_script)
-        .arg(genesis_dir)
-        .env("SKIP_KEY_GEN", "true")
-        .status()?;
-    if !status.success() {
-        bail!("Genesis regeneration with real IPs failed");
-    }
+    write_config_yaml(vc, genesis_offset, genesis_dir)?;
+    run_genesis_tool(genesis_dir)?;
+    append_genesis_validators(vc, genesis_dir)?;
+    generate_annotated_validators(genesis_dir)?;
 
     // Update the ConfigMap with corrected genesis files so that when
     // init containers re-run on restart, they copy the correct data.
@@ -956,15 +958,14 @@ fn get_config_mount(node: &str, container_id: &str) -> Result<String> {
     bail!("No /config mount found in container {container_id}")
 }
 
-/// Start background log streaming for all pods to output/logs/.
+/// Start background log streaming for all pods into the run directory.
 fn start_log_streaming(
     context: &str,
     namespace: &str,
     pods: &[(String, String)],
-    output_dir: &Path,
+    logs_dir: &Path,
 ) -> Result<()> {
-    let logs_dir = output_dir.join("logs");
-    fs::create_dir_all(&logs_dir)?;
+    fs::create_dir_all(logs_dir)?;
 
     for (pod_name, entry_name) in pods {
         let k8s_name = entry_name.replace('_', "-");
@@ -1007,10 +1008,9 @@ fn snapshot_previous_logs(
     context: &str,
     namespace: &str,
     pods: &[(String, String)],
-    output_dir: &Path,
+    logs_dir: &Path,
 ) {
-    let logs_dir = output_dir.join("logs");
-    let _ = fs::create_dir_all(&logs_dir);
+    let _ = fs::create_dir_all(logs_dir);
 
     for (pod_name, entry_name) in pods {
         let k8s_name = entry_name.replace('_', "-");

@@ -1,12 +1,8 @@
 use std::path::PathBuf;
 
-use leanstart::{
-    config::{
-        generator::generate_validator_config,
-        spec::{parse_client_spec, ClientAllocation, DevnetSpec},
-    },
-    k8s::values::generate_helm_values,
-};
+use leanstart::config::generator::generate_validator_config;
+use leanstart::config::spec::{ClientAllocation, DevnetSpec, parse_client_spec};
+use leanstart::k8s::values::generate_helm_values;
 
 fn test_spec(clients: Vec<(&str, u32)>) -> DevnetSpec {
     DevnetSpec {

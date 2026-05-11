@@ -55,7 +55,6 @@ impl DevnetSpec {
     }
 
     /// Total number of validators across all clients (counts every subnet).
-    #[allow(dead_code)]
     pub fn total_validators(&self) -> u32 {
         self.clients.iter().map(|c| c.instances).sum::<u32>()
             * self.validators_per_pod

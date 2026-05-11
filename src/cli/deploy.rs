@@ -1,6 +1,7 @@
-use std::{path::PathBuf, process::Command};
+use std::path::PathBuf;
+use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 
 #[derive(Debug, Args)]
@@ -110,5 +111,8 @@ fn find_chart_path() -> Result<PathBuf> {
             return Ok(path.clone());
         }
     }
-    bail!("Could not find Helm chart. Looked in: {:?}", candidates)
+    bail!(
+        "Could not find Helm chart. Looked in: {:?}",
+        candidates
+    )
 }

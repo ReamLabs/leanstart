@@ -1,15 +1,12 @@
-use std::{fs, path::Path};
+use std::fs;
+use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    config::{
-        clients::get_client,
-        spec::{DevnetSpec, MAX_SUBNETS},
-    },
-    keys::keygen::deterministic_privkey,
-};
+use crate::config::clients::get_client;
+use crate::config::spec::{DevnetSpec, MAX_SUBNETS};
+use crate::keys::keygen::deterministic_privkey;
 
 /// A single entry in the generated validator-config.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]

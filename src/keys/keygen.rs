@@ -1,6 +1,8 @@
-use std::{fs, path::Path, process::Command};
+use std::fs;
+use std::path::Path;
+use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -24,17 +26,13 @@ pub fn write_node_keys(
         let path = output_dir.join(format!("{name}.key"));
         fs::write(&path, privkey)?;
     }
-    println!(
-        "Wrote {} node key files to {}",
-        validators.len(),
-        output_dir.display()
-    );
+    println!("Wrote {} node key files to {}", validators.len(), output_dir.display());
     Ok(())
 }
 
 /// Generate hash-sig validator keys using the hash-sig-cli Docker image.
 ///
-/// Runs: `docker run blockblaz/hash-sig-cli:devnet2 generate --num-validators N
+/// Runs: `docker run blockblaz/hash-sig-cli:latest generate --num-validators N
 ///        --log-num-active-epochs E --output-dir /genesis/hash-sig-keys --export-format both`
 pub fn generate_hash_sig_keys(
     num_validators: u32,
@@ -55,7 +53,7 @@ pub fn generate_hash_sig_keys(
             &format!("{uid}:{gid}"),
             "-v",
             &format!("{}:/genesis", output_dir.display()),
-            "blockblaz/hash-sig-cli:devnet2",
+            "blockblaz/hash-sig-cli:latest",
             "generate",
             "--num-validators",
             &num_validators.to_string(),
