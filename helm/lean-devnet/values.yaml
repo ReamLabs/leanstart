@@ -6,7 +6,7 @@ genesis:
   storageClass: ""
   storageSize: 5Gi
 
-# Populated by `lean-devnet generate`
+# Populated by `leanstart generate`
 clients: []
 
 initScripts:
