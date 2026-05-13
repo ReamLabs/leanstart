@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// How a client handles hash-sig keys.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum HashSigMode {
-    /// No hash-sig flags (ethlambda, ream, zeam, lighthouse).
+    /// No hash-sig flags (ethlambda, nlean, ream, zeam, lighthouse).
     None,
     /// Per-validator key files via --xmss-pk / --xmss-sk (qlean).
     PerValidator,
@@ -41,6 +41,14 @@ pub static CLIENTS: &[ClientDef] = &[
         arch_aware: true,
         seccomp_unconfined: false,
         hash_sig_mode: HashSigMode::Directory,
+        has_http_port: true,
+    },
+    ClientDef {
+        name: "nlean",
+        image: "ghcr.io/nleaneth/nlean:devnet4",
+        arch_aware: false,
+        seccomp_unconfined: false,
+        hash_sig_mode: HashSigMode::None,
         has_http_port: true,
     },
     ClientDef {
@@ -139,6 +147,28 @@ pub fn build_args(
                 "--metrics-port".into(),
                 "8080".into(),
                 "--api-host".into(),
+                "0.0.0.0".into(),
+                "--api-port".into(),
+                "5055".into(),
+            ]);
+        }
+        "nlean" => {
+            args.extend_from_slice(&[
+                "--custom-network-config-dir".into(),
+                "/config".into(),
+                "--node".into(),
+                node_id.into(),
+                "--data-dir".into(),
+                "/data".into(),
+                "--node-key".into(),
+                format!("/config/{node_id}.key"),
+                "--socket-port".into(),
+                "9000".into(),
+                "--metrics".into(),
+                "true".into(),
+                "--metrics-port".into(),
+                "8080".into(),
+                "--metrics-address".into(),
                 "0.0.0.0".into(),
                 "--api-port".into(),
                 "5055".into(),
@@ -278,7 +308,7 @@ pub fn build_args(
     if is_aggregator {
         args.push("--is-aggregator".into());
     }
-    if matches!(client.name, "zeam" | "ethlambda" | "ream") {
+    if matches!(client.name, "zeam" | "ethlambda" | "ream" | "nlean") {
         if let Some(count) = attestation_committee_count {
             args.push("--attestation-committee-count".into());
             args.push(count.to_string());
