@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// How a client handles hash-sig keys.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum HashSigMode {
-    /// No hash-sig flags (ethlambda, nlean, ream, zeam, lighthouse).
+    /// No hash-sig flags (ethlambda, ream, zeam, lighthouse).
     None,
     /// Per-validator key files via --xmss-pk / --xmss-sk (qlean).
     PerValidator,
@@ -44,16 +44,8 @@ pub static CLIENTS: &[ClientDef] = &[
         has_http_port: true,
     },
     ClientDef {
-        name: "nlean",
-        image: "ghcr.io/nleaneth/nlean:devnet4",
-        arch_aware: false,
-        seccomp_unconfined: false,
-        hash_sig_mode: HashSigMode::None,
-        has_http_port: true,
-    },
-    ClientDef {
         name: "ream",
-        image: "snaiyer1/ream:latest",
+        image: "ghcr.io/reamlabs/ream:latest-devnet4",
         arch_aware: false,
         seccomp_unconfined: false,
         hash_sig_mode: HashSigMode::None,
@@ -65,7 +57,7 @@ pub static CLIENTS: &[ClientDef] = &[
         arch_aware: false,
         seccomp_unconfined: true,
         hash_sig_mode: HashSigMode::None,
-        has_http_port: false,
+        has_http_port: true,
     },
     ClientDef {
         name: "grandine",
@@ -73,7 +65,7 @@ pub static CLIENTS: &[ClientDef] = &[
         arch_aware: false,
         seccomp_unconfined: false,
         hash_sig_mode: HashSigMode::Directory,
-        has_http_port: false,
+        has_http_port: true,
     },
     ClientDef {
         name: "lantern",
@@ -152,28 +144,6 @@ pub fn build_args(
                 "5055".into(),
             ]);
         }
-        "nlean" => {
-            args.extend_from_slice(&[
-                "--custom-network-config-dir".into(),
-                "/config".into(),
-                "--node".into(),
-                node_id.into(),
-                "--data-dir".into(),
-                "/data".into(),
-                "--node-key".into(),
-                format!("/config/{node_id}.key"),
-                "--socket-port".into(),
-                "9000".into(),
-                "--metrics".into(),
-                "true".into(),
-                "--metrics-port".into(),
-                "8080".into(),
-                "--metrics-address".into(),
-                "0.0.0.0".into(),
-                "--api-port".into(),
-                "5055".into(),
-            ]);
-        }
         "ream" => {
             args.extend_from_slice(&[
                 "--data-dir".into(),
@@ -215,9 +185,11 @@ pub fn build_args(
                 node_id.into(),
                 "--node-key".into(),
                 format!("/config/{node_id}.key"),
-                "--metrics_enable".into(),
-                "--api-port".into(),
+                "--metrics-enable".into(),
+                "--metrics-port".into(),
                 "8080".into(),
+                "--api-port".into(),
+                "5055".into(),
             ]);
         }
         "grandine" => {
@@ -237,10 +209,14 @@ pub fn build_args(
                 "--address".into(),
                 "0.0.0.0".into(),
                 "--metrics".into(),
+                "--metrics-address".into(),
+                "0.0.0.0".into(),
+                "--metrics-port".into(),
+                "8080".into(),
                 "--http-address".into(),
                 "0.0.0.0".into(),
                 "--http-port".into(),
-                "8080".into(),
+                "5055".into(),
                 "--hash-sig-key-dir".into(),
                 "/config/hash-sig-keys".into(),
             ]);
@@ -308,7 +284,7 @@ pub fn build_args(
     if is_aggregator {
         args.push("--is-aggregator".into());
     }
-    if matches!(client.name, "zeam" | "ethlambda" | "ream" | "nlean") {
+    if matches!(client.name, "zeam" | "ethlambda" | "ream") {
         if let Some(count) = attestation_committee_count {
             args.push("--attestation-committee-count".into());
             args.push(count.to_string());
