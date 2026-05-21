@@ -1,127 +1,172 @@
 # leanstart
 
-Devnet orchestrator for Lean consensus validators. `leanstart` generates genesis state, validator keys, and Helm values, then deploys a multi-client Lean devnet to a Kubernetes cluster.
-
-## Prerequisites
-
-- Rust (stable)
-- A Kubernetes cluster (e.g. [`kind`](https://kind.sigs.k8s.io/)) and `kubectl`
-- [Helm](https://helm.sh/) 3.x
-- The Lean `generate-genesis.sh` script (path supplied via `--genesis-script` or `GENESIS_SCRIPT`)
+A local devnet orchestrator for [Lean Ethereum](https://ethresear.ch/t/lean-ethereum/22547) validator clients. Spin up a multi-client devnet with a single command — key generation, genesis, Kubernetes, and metrics included.
 
 ## Install
 
-```sh
-cargo install --path .
+```bash
+curl -fsSL https://raw.githubusercontent.com/shariqnaiyer/leanstart/main/install.sh | bash
 ```
 
-Or build from source:
+Works on **macOS** (x86_64 + Apple Silicon) and **Linux** (x86_64 + aarch64). Installs: **Rust**, **kind**, **kubectl**, **helm**, **Docker**, and the `leanstart` binary. Safe to re-run.
 
-```sh
-cargo build --release
-./target/release/leanstart --help
-```
+| Platform | Docker install |
+|---|---|
+| macOS | Docker Desktop via Homebrew cask |
+| Linux | Docker Engine via `get.docker.com` |
+
+> **Note:** Docker must be running before launching a devnet. On macOS, open Docker Desktop once after install to complete its setup. On Linux, log out and back in after install to pick up the `docker` group (or run `newgrp docker`).
+
+---
 
 ## Quick start
 
-Run a devnet with one `ream` node and two `zeam` nodes:
+```bash
+# Single-client devnet (3 ream pods)
+leanstart ream:3
 
-```sh
-leanstart ream zeam:2
+# Multi-client devnet
+leanstart ream:2 zeam:2
+
+# Multi-subnet devnet (2 subnets × 3 pods each)
+leanstart ream:3 --subnets 2
 ```
 
-The first positional arg is treated as a client spec, so `leanstart run ream zeam:2` and `leanstart ream zeam:2` are equivalent. `run` covers the common path: generate artifacts, then deploy them.
+Once running, Grafana is at **http://localhost:3000** (`admin` / `admin`) and Prometheus at **http://localhost:9090**.
+
+---
+
+## Supported clients
+
+| Client | Image |
+|---|---|
+| `ream` | `ghcr.io/reamlabs/ream:latest-devnet4` |
+| `zeam` | `blockblaz/zeam:devnet4` |
+| `grandine` | `sifrai/lean:devnet-4` |
+| `lantern` | `piertwo/lantern:v0.0.4` |
+| `qlean` | `qdrvm/qlean-mini:devnet-4` |
+| `ethlambda` | `ghcr.io/lambdaclass/ethlambda:devnet4` |
+
+Client images are always pulled fresh from the registry on each run.
+
+---
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `leanstart run <clients...>` | Generate config and deploy a devnet end-to-end |
-| `leanstart generate` | Generate validator config, keys, genesis, and Helm values only |
-| `leanstart deploy` | Deploy a previously generated devnet to Kubernetes |
-| `leanstart status` | Show pod status in the devnet namespace |
-| `leanstart destroy` | Tear down the devnet |
-
-Run `leanstart <command> --help` for full flags.
-
-## Generate, then deploy (explicit flow)
-
-`run` is a shortcut. For more control — reproducible artifacts, reviewing the generated Helm values, deploying the same artifacts to multiple clusters, or running in CI — split the pipeline into `generate` and `deploy`.
-
-```sh
-# 1. Generate validator config, keys, genesis, and helm-values.yaml
-leanstart generate \
-  --clients ream:1,zeam:2 \
-  --namespace lean-devnet \
-  --output-dir ./output \
-  --validators-per-pod 1 \
-  --genesis-offset 120 \
-  --subnets 1
-
-# 2. Inspect what was generated
-ls ./output            # helm-values.yaml, genesis/, secrets/
-cat ./output/helm-values.yaml
-
-# 3. Deploy the generated artifacts
-leanstart deploy --output-dir ./output --namespace lean-devnet
-
-# 4. Watch pods and tear down when done
-leanstart status  --namespace lean-devnet
-leanstart destroy --namespace lean-devnet
-```
-
-The `--output-dir` is the durable artifact: regenerating with the same `--seed` is deterministic, and you can deploy the same directory repeatedly without re-running `generate`.
-
-For air-gapped or offline use, pass `--config-only` to `generate` to skip the Docker-based genesis step and emit just the YAML manifests.
-
-## Running multiple devnets
-
-Each devnet is isolated by its Kubernetes namespace, kind cluster name, and output directory. Vary all three to run several side-by-side:
-
-```sh
-# Devnet A: 1 ream + 2 zeam in namespace "devnet-a"
-leanstart ream zeam:2 \
-  --namespace devnet-a \
-  --cluster   devnet-a \
-  --output-dir ./output/devnet-a
-
-# Devnet B: 3 grandine in namespace "devnet-b"
-leanstart grandine:3 \
-  --namespace devnet-b \
-  --cluster   devnet-b \
-  --output-dir ./output/devnet-b
-```
-
-Operate each devnet independently by passing the matching `--namespace`:
-
-```sh
-leanstart status  --namespace devnet-a
-leanstart destroy --namespace devnet-b
-```
-
-## Helm chart
-
-The `helm/lean-devnet` chart is consumed directly by `leanstart` and can also be installed manually:
-
-```sh
-helm install lean-devnet ./helm/lean-devnet -f output/helm-values.yaml -n lean-devnet --create-namespace
-```
-
-Presets for cluster sizes live in `helm/lean-devnet/presets/`.
-
-## Layout
+### `leanstart run` (default)
 
 ```
-src/        leanstart CLI (Rust)
-helm/       Helm chart for the devnet
-scripts/    Helper scripts (e.g. local kind deployment with peer discovery)
-tests/      Integration tests
+leanstart [run] <clients...> [options]
 ```
 
-## Contributing
+`run` is the default — `leanstart ream:3` and `leanstart run ream:3` are identical.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: see [SECURITY.md](SECURITY.md).
+**Client spec:** `<name>` or `<name>:<count>` — e.g. `ream`, `zeam:2`, `grandine:3`.
 
-## License
+| Flag | Default | Description |
+|---|---|---|
+| `--subnets <N>` | `1` | Number of attestation subnets. Each client allocation is replicated once per subnet (max 5) |
+| `--attestation-committee-count <N>` | `--subnets` | Override the committee count independently of subnet count |
+| `--validators-per-pod <N>` | `1` | Validators assigned to each pod |
+| `--genesis-offset <secs>` | `120` | Seconds until genesis from now (gives pods time to start) |
+| `--seed <hex>` | `0000…0001` | 32-byte hex seed for deterministic key generation |
+| `--active-epoch <N>` | `18` | Hash-sig key active epoch exponent (2^N total epochs) |
+| `--bootnode-count <N>` | `5` | Bootnode pods per client type |
+| `--namespace <name>` | `lean-devnet` | Kubernetes namespace |
+| `--cluster <name>` | `lean-devnet` | Kind cluster name |
+| `--output-dir <path>` | `./output` | Directory for generated artifacts |
+| `--skip-kind` | — | Skip Kind cluster creation; use an existing cluster |
+| `--context <ctx>` | — | kubectl/helm context override (required with `--skip-kind`) |
+| `--skip-metrics` | — | Skip Prometheus + Grafana installation |
+| `--config-only` | — | Generate config files only, skip deployment |
 
-MIT — see [LICENSE](LICENSE).
+---
+
+### `leanstart status`
+
+Show pod status for the running devnet.
+
+```bash
+leanstart status
+leanstart status --namespace <name>
+```
+
+---
+
+### `leanstart destroy`
+
+Tear down the devnet and delete the Kind cluster.
+
+```bash
+leanstart destroy
+leanstart destroy --cluster <name> --namespace <name>
+```
+
+---
+
+### `leanstart generate`
+
+Generate all artifacts (keys, genesis, Helm values) without deploying. Useful for inspecting config or deploying to a remote cluster.
+
+```bash
+leanstart generate --clients ream:2,zeam:2 --subnets 2
+leanstart deploy   --output-dir ./output
+```
+
+---
+
+## Output
+
+Every run logs to `./output/runs/<timestamp>/`:
+
+```
+output/
+├── genesis/
+│   ├── config.yaml                  # Chain config
+│   ├── genesis.ssz / genesis.json   # Genesis state
+│   ├── nodes.yaml                   # Bootnode peer list
+│   ├── annotated_validators.yaml    # Validator registry
+│   ├── hash-sig-keys/               # Hash-sig key pairs per validator
+│   └── <pod>.key                    # libp2p node keys
+├── helm-values.yaml                 # Helm chart values
+├── secrets/                         # Per-pod Kubernetes Secrets
+└── runs/
+    ├── latest -> <timestamp>/       # Symlink to most recent run
+    └── <timestamp>/
+        ├── run.log                  # Full orchestration log
+        ├── <pod>.log                # Streaming pod logs
+        └── <pod>.previous.log       # Previous container logs (on crash)
+```
+
+---
+
+## Observability
+
+When metrics are enabled (default), the following are port-forwarded automatically:
+
+| Service | URL | Credentials |
+|---|---|---|
+| Grafana | http://localhost:3000 | `admin` / `admin` |
+| Prometheus | http://localhost:9090 | — |
+
+Grafana is pre-configured with two dashboard folders:
+- **Lean Ethereum Clients** — the main client dashboard (set as home)
+- **Infra** — Kubernetes and Prometheus internals
+
+Each pod exposes:
+- `:8080/metrics` — Prometheus metrics
+- `:9000` — libp2p / QUIC P2P port
+- `:5055` — HTTP REST API (where supported)
+
+---
+
+## Multi-subnet devnets
+
+Passing `--subnets N` replicates each client allocation across N subnets and configures one aggregator per subnet:
+
+```bash
+# 2 subnets × 3 ream pods = 6 pods total
+leanstart ream:3 --subnets 2
+```
+
+Pod naming in multi-subnet mode: `ream-s0-p0`, `ream-s0-p1`, `ream-s1-p0`, etc.
