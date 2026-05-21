@@ -4,7 +4,7 @@
 # Safe to re-run; every step is idempotent.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/shariqnaiyer/leanstart/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/shariqnaiyer/leanstart/master/install.sh | bash
 #   — or —
 #   ./install.sh   (from a cloned repo)
 set -euo pipefail
