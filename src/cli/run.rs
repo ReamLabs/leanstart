@@ -419,16 +419,10 @@ fn load_images_into_kind(spec: &DevnetSpec, cluster: &str) -> Result<()> {
     for image in &images {
         println!("  Loading {}...", image);
 
-        // Pull if not present locally
-        let check = Command::new("docker")
-            .args(["image", "inspect", image])
-            .output()?;
-        if !check.status.success() {
-            println!("    Pulling from registry...");
-            let status = Command::new("docker").args(["pull", image]).status()?;
-            if !status.success() {
-                bail!("Failed to pull image {image}. Build or pull it first.");
-            }
+        // Always pull to ensure we have the latest version
+        let status = Command::new("docker").args(["pull", image]).status()?;
+        if !status.success() {
+            bail!("Failed to pull image {image}. Check that the image exists in the registry.");
         }
 
         // Load into kind via docker save | ctr import
@@ -650,6 +644,8 @@ fn provision_grafana_dashboard(context: &str) -> Result<()> {
          \x20 namespace: monitoring\n\
          \x20 labels:\n\
          \x20   grafana_dashboard: \"1\"\n\
+         \x20 annotations:\n\
+         \x20   grafana_folder: \"Lean Ethereum Clients\"\n\
          data:\n\
          \x20 lean-devnet.json: |\n\
          {indented}\n"
@@ -727,6 +723,12 @@ fn install_metrics_stack(context: &str) -> Result<()> {
             "--set", "kubeStateMetrics.enabled=false",
             "--set", "nodeExporter.enabled=false",
             "--set", "grafana.adminPassword=admin",
+            // Put built-in k8s/infra dashboards in their own folder
+            "--set", "grafana.defaultDashboardsFolder=Infra",
+            // Allow ConfigMap annotations to declare which folder a dashboard belongs to
+            "--set", "grafana.sidecar.dashboards.folderAnnotation=grafana_folder",
+            // Set the Lean Ethereum Clients dashboard as the home dashboard
+            "--set", "grafana.grafana\\.ini.dashboards.default_home_dashboard_path=/tmp/dashboards/Lean Ethereum Clients/lean-devnet.json",
             "--set", "prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false",
             "--set", "prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false",
             "--wait", "--timeout", "10m",
