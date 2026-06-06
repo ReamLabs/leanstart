@@ -11,6 +11,7 @@ fn test_spec(clients: Vec<(&str, u32)>) -> DevnetSpec {
             .map(|(name, instances)| ClientAllocation {
                 name: name.to_string(),
                 instances,
+                host: None,
             })
             .collect(),
         validators_per_pod: 1,
@@ -24,6 +25,7 @@ fn test_spec(clients: Vec<(&str, u32)>) -> DevnetSpec {
         bootnode_count: 5,
         subnets: 1,
         attestation_committee_count: None,
+        injected: false,
     }
 }
 
@@ -36,9 +38,24 @@ fn test_parse_client_spec() {
     let c = parse_client_spec("zeam:3").unwrap();
     assert_eq!(c.name, "zeam");
     assert_eq!(c.instances, 3);
+    assert_eq!(c.host, None);
+
+    // @host placement
+    let c = parse_client_spec("ream:3@nbg1").unwrap();
+    assert_eq!(c.name, "ream");
+    assert_eq!(c.instances, 3);
+    assert_eq!(c.host.as_deref(), Some("nbg1"));
+
+    let c = parse_client_spec("zeam@nbg2").unwrap();
+    assert_eq!(c.name, "zeam");
+    assert_eq!(c.instances, 1);
+    assert_eq!(c.host.as_deref(), Some("nbg2"));
 
     assert!(parse_client_spec("bad:spec:extra").is_err());
     assert!(parse_client_spec("zeam:abc").is_err());
+    assert!(parse_client_spec("ream@").is_err()); // empty host
+    assert!(parse_client_spec("ream:2@bad_host!").is_err()); // invalid host char
+    assert!(parse_client_spec("@nbg1").is_err()); // empty name
 }
 
 #[test]

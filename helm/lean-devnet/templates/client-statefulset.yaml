@@ -26,6 +26,21 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
+      {{- if $client.nodeSelectorHost }}
+      # Pinned via `@host`: schedule onto the node labelled leanstart.io/host=<host>.
+      nodeSelector:
+        leanstart.io/host: {{ $client.nodeSelectorHost | quote }}
+      {{- else }}
+      # No `@host`: spread evenly across nodes. Soft (ScheduleAnyway) so the
+      # devnet still deploys when there are fewer nodes than pods.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: lean-devnet
+      {{- end }}
       initContainers:
         - name: resolve-peers
           image: {{ $.Values.initScripts.resolverImage }}
@@ -39,13 +54,17 @@ spec:
               value: {{ $.Values.namespace }}
             - name: BOOTNODE_COUNT
               value: "{{ $.Values.bootnodeCount }}"
+            - name: INJECTED
+              value: "{{ $.Values.genesis.injected }}"
           volumeMounts:
             - name: config-shared
               mountPath: /config-shared
               readOnly: true
+            {{- if not $.Values.genesis.injected }}
             - name: genesis-data
               mountPath: /genesis-data
               readOnly: true
+            {{- end }}
             - name: init-scripts
               mountPath: /scripts
               readOnly: true
@@ -95,9 +114,11 @@ spec:
         - name: config-shared
           configMap:
             name: {{ $.Values.genesis.configMapName }}
+        {{- if not $.Values.genesis.injected }}
         - name: genesis-data
           persistentVolumeClaim:
             claimName: {{ $.Values.genesis.pvcName }}
+        {{- end }}
         - name: init-scripts
           configMap:
             name: init-scripts

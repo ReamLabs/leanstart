@@ -179,6 +179,9 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         bootnode_count: args.bootnode_count,
         subnets: args.subnets,
         attestation_committee_count: args.attestation_committee_count,
+        // Remote multi-node clusters (--skip-kind) use the injected gated-init
+        // path; local kind keeps the legacy shared-PVC + restart path.
+        injected: args.skip_kind,
     };
 
     let genesis_dir = args.output_dir.join("genesis");
@@ -255,8 +258,15 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         &vc,
         &genesis_dir,
         &args.output_dir,
+        spec.injected,
     )?;
-    helm_install(&context, &args.namespace, &chart_dir, &args.output_dir)?;
+    helm_install(
+        &context,
+        &args.namespace,
+        &chart_dir,
+        &args.output_dir,
+        !args.skip_metrics,
+    )?;
 
     // Derive expected pod names from the validator config.
     let pod_names: Vec<(String, String)> = vc
@@ -268,33 +278,68 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         })
         .collect();
 
-    // Step 7: Wait for pods, fix peer IPs
-    println!("==> Waiting for pods...");
-    if let Err(e) = wait_for_pods(&context, &args.namespace, &vc) {
-        // Snapshot --previous logs for any pod that crashed so the user has a
-        // record on disk before we bail (streaming hasn't started yet).
-        snapshot_previous_logs(&context, &args.namespace, &pod_names, run_dir);
-        eprintln!(
-            "\nSome pods failed to become ready. Check {} for details.",
-            run_dir.display()
-        );
-        return Err(e);
+    // Step 7: Wait for pods, fix peer discovery.
+    if spec.injected {
+        // Remote multi-node: gated-init. Pods block in their init container
+        // until we inject IP-correct genesis + this pod's keys, then start the
+        // client exactly once (no restart, no shared PVC, no docker/crictl).
+        println!("==> Waiting for pods to be scheduled (IP assignment)...");
+        if let Err(e) = wait_for_pods_scheduled(&context, &args.namespace, &pod_names) {
+            snapshot_previous_logs(&context, &args.namespace, &pod_names, run_dir);
+            eprintln!(
+                "\nSome pods failed to schedule. Check {} for details.",
+                run_dir.display()
+            );
+            return Err(e);
+        }
+
+        println!("==> Injecting peer discovery + keys (gated-init)...");
+        inject_peers_gated(
+            &context,
+            &args.namespace,
+            &vc,
+            &genesis_dir,
+            args.genesis_offset,
+            &pod_names,
+        )?;
+
+        println!("==> Waiting for pods to be ready...");
+        if let Err(e) = wait_for_pods(&context, &args.namespace, &vc) {
+            snapshot_previous_logs(&context, &args.namespace, &pod_names, run_dir);
+            eprintln!(
+                "\nSome pods failed to become ready. Check {} for details.",
+                run_dir.display()
+            );
+            return Err(e);
+        }
+    } else {
+        println!("==> Waiting for pods...");
+        if let Err(e) = wait_for_pods(&context, &args.namespace, &vc) {
+            // Snapshot --previous logs for any pod that crashed so the user has a
+            // record on disk before we bail (streaming hasn't started yet).
+            snapshot_previous_logs(&context, &args.namespace, &pod_names, run_dir);
+            eprintln!(
+                "\nSome pods failed to become ready. Check {} for details.",
+                run_dir.display()
+            );
+            return Err(e);
+        }
+
+        println!("==> Fixing peer discovery...");
+        fix_peer_ips(
+            &context,
+            &args.namespace,
+            &args.cluster,
+            &vc,
+            &genesis_dir,
+            args.genesis_offset,
+            &pod_names,
+        )?;
     }
 
-    println!("==> Fixing peer discovery...");
-    fix_peer_ips(
-        &context,
-        &args.namespace,
-        &args.cluster,
-        &vc,
-        &genesis_dir,
-        args.genesis_offset,
-        &pod_names,
-    )?;
-
-    // Stream logs AFTER fix_peer_ips: that step kills and restarts containers
-    // to apply the corrected peer IPs, and we want to follow the post-restart
-    // containers (the long-running ones), not the short-lived initial ones.
+    // Stream logs AFTER peer discovery: the kind path restarts containers and we
+    // want the long-running ones; the injected path starts each client exactly
+    // once after the sentinel is dropped.
     println!("==> Streaming logs to {}/...", run_dir.display());
     start_log_streaming(&context, &args.namespace, &pod_names, run_dir)?;
 
@@ -444,12 +489,17 @@ fn load_images_into_kind(spec: &DevnetSpec, cluster: &str) -> Result<()> {
 }
 
 /// Set up K8s namespace, ConfigMap, PVC, secrets, and load hash-sig keys.
+///
+/// In `injected` (multi-node) mode the shared genesis PVC and the hash-sig
+/// loader pod are skipped — `inject_peers_gated` copies IP-correct genesis and
+/// each pod's own keys straight into its init container instead.
 fn setup_k8s_resources(
     context: &str,
     namespace: &str,
     vc: &ValidatorConfig,
     genesis_dir: &PathBuf,
     output_dir: &PathBuf,
+    injected: bool,
 ) -> Result<()> {
     let kc = |args: &[&str]| -> Result<bool> {
         let status = Command::new("kubectl")
@@ -515,6 +565,9 @@ fn setup_k8s_resources(
     let cm_refs: Vec<&str> = cm_args.iter().map(|s| s.as_str()).collect();
     kc(&cm_refs)?;
 
+    // Shared genesis PVC + hash-sig loader pod are only for the legacy kind
+    // path. Injected mode delivers keys per-pod via inject_peers_gated instead.
+    if !injected {
     // Create PVC
     let pvc_yaml = format!(
         "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: genesis-data\n  namespace: {namespace}\nspec:\n  accessModes: [ReadWriteOnce]\n  resources:\n    requests:\n      storage: 1Gi\n"
@@ -603,6 +656,7 @@ fn setup_k8s_resources(
             ])
             .status()?;
     }
+    } // end if !injected
 
     // Apply secrets
     let secrets_dir = output_dir.join("secrets");
@@ -618,6 +672,226 @@ fn setup_k8s_resources(
                 namespace,
             ])
             .status()?;
+    }
+
+    Ok(())
+}
+
+/// Wait until every pod exists and has been assigned a pod IP. In injected mode
+/// pods deliberately block in their init container, so we wait for scheduling
+/// (IP assignment) rather than readiness.
+fn wait_for_pods_scheduled(
+    context: &str,
+    namespace: &str,
+    pods: &[(String, String)],
+) -> Result<()> {
+    let deadline = time::Instant::now() + time::Duration::from_secs(180);
+    for (pod_name, _) in pods {
+        print!("  Waiting for {pod_name} to be scheduled...");
+        loop {
+            let output = Command::new("kubectl")
+                .args([
+                    "--context", context, "get", "pod", pod_name, "-n", namespace,
+                    "-o", "jsonpath={.status.podIP}",
+                ])
+                .output()?;
+            let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !ip.is_empty() {
+                println!(" {ip}");
+                break;
+            }
+            if time::Instant::now() > deadline {
+                println!();
+                bail!("Pod {pod_name} was not assigned an IP within timeout");
+            }
+            thread::sleep(time::Duration::from_secs(2));
+        }
+    }
+    Ok(())
+}
+
+/// Validator index range [start, end) each pod owns, derived from per-entry
+/// `count` in generation order. Matches the hash-sig key file numbering
+/// (`validator_<idx>_*`) and the manifest `index` fields.
+fn pod_validator_indices(vc: &ValidatorConfig) -> Vec<(String, u32, u32)> {
+    let mut out = Vec::new();
+    let mut start = 0u32;
+    for e in &vc.validators {
+        out.push((e.name.clone(), start, start + e.count));
+        start += e.count;
+    }
+    out
+}
+
+/// Build a hash-sig manifest containing only validators in [start, end),
+/// preserving original `index` fields so a client still maps its global
+/// validator index to the shipped key files.
+fn filtered_manifest(hash_sig_dir: &Path, start: u32, end: u32) -> Result<String> {
+    let path = hash_sig_dir.join("validator-keys-manifest.yaml");
+    let content = fs::read_to_string(&path)?;
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(&content)?;
+    if let Some(arr) = doc
+        .get_mut("validators")
+        .and_then(|v| v.as_sequence_mut())
+    {
+        arr.retain(|e| {
+            e.get("index")
+                .and_then(|i| i.as_u64())
+                .map(|i| (i as u32) >= start && (i as u32) < end)
+                .unwrap_or(false)
+        });
+        let n = arr.len();
+        if let Some(nv) = doc.get_mut("num_validators") {
+            *nv = serde_yaml::Value::Number(n.into());
+        }
+    }
+    Ok(serde_yaml::to_string(&doc)?)
+}
+
+/// Gated-init peer discovery for remote multi-node clusters.
+///
+/// Pods are blocked in their init container (waiting on /config/.ready). For all
+/// pods we read the assigned pod IPs, rewrite validator-config.yaml with the real
+/// IPs, and regenerate signed ENRs once. Then, per pod, we copy the IP-correct
+/// genesis files, the pod's node key, and the pod's own hash-sig keys into
+/// /config and drop the sentinel — so each client starts exactly once with
+/// correct peering. No container restart, no shared PVC, no docker/crictl.
+fn inject_peers_gated(
+    context: &str,
+    namespace: &str,
+    vc: &ValidatorConfig,
+    genesis_dir: &PathBuf,
+    genesis_offset: u32,
+    pods: &[(String, String)],
+) -> Result<()> {
+    // 1. Read real pod IPs (entry_name -> ip), in pod (== entry) order.
+    let mut ips: Vec<(String, String)> = Vec::new();
+    for (pod_name, entry_name) in pods {
+        let output = Command::new("kubectl")
+            .args([
+                "--context", context, "get", "pod", pod_name, "-n", namespace,
+                "-o", "jsonpath={.status.podIP}",
+            ])
+            .output()?;
+        let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if ip.is_empty() {
+            bail!("Pod {pod_name} has no IP");
+        }
+        println!("  {entry_name} -> {ip}");
+        ips.push((entry_name.clone(), ip));
+    }
+
+    // 2. Rewrite validator-config.yaml IPs in entry order (one `ip:` per entry).
+    let vc_path = genesis_dir.join("validator-config.yaml");
+    let content = fs::read_to_string(&vc_path)?;
+    let mut ip_idx = 0;
+    let mut result = String::new();
+    for line in content.lines() {
+        if line.contains("ip:") && ip_idx < ips.len() {
+            let indent = &line[..line.find("ip:").unwrap()];
+            result.push_str(&format!("{indent}ip: \"{}\"\n", ips[ip_idx].1));
+            ip_idx += 1;
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    fs::write(&vc_path, &result)?;
+
+    // 3. Regenerate genesis with real IPs (re-signed ENRs). Hash-sig keys are
+    //    untouched — they already exist under genesis_dir/hash-sig-keys/.
+    for f in &[
+        "config.yaml", "genesis.ssz", "genesis.json", "nodes.yaml",
+        "validators.yaml", "annotated_validators.yaml",
+    ] {
+        let _ = fs::remove_file(genesis_dir.join(f));
+    }
+    write_config_yaml(vc, genesis_offset, genesis_dir)?;
+    run_genesis_tool(genesis_dir)?;
+    append_genesis_validators(vc, genesis_dir)?;
+    generate_annotated_validators(genesis_dir)?;
+
+    // 4. Per-pod injection into the waiting init container.
+    const INIT_C: &str = "resolve-peers";
+    let genesis_files = [
+        "config.yaml", "validators.yaml", "annotated_validators.yaml",
+        "nodes.yaml", "genesis.json", "genesis.ssz", "validator-config.yaml",
+    ];
+    let hash_sig_dir = genesis_dir.join("hash-sig-keys");
+    let ranges = pod_validator_indices(vc);
+
+    for (pod_name, entry_name) in pods {
+        let cp = |src: &Path, dest: &str| -> Result<()> {
+            let status = Command::new("kubectl")
+                .args([
+                    "--context", context, "cp",
+                    &src.display().to_string(),
+                    &format!("{namespace}/{pod_name}:{dest}"),
+                    "-c", INIT_C,
+                ])
+                .status()?;
+            if !status.success() {
+                bail!("kubectl cp {} -> {pod_name}:{dest} failed", src.display());
+            }
+            Ok(())
+        };
+
+        for f in &genesis_files {
+            let src = genesis_dir.join(f);
+            if src.exists() {
+                cp(&src, &format!("/config/{f}"))?;
+            }
+        }
+
+        let key_src = genesis_dir.join(format!("{entry_name}.key"));
+        if key_src.exists() {
+            cp(&key_src, &format!("/config/{entry_name}.key"))?;
+        }
+
+        // This pod's hash-sig keys: .ssz only (.json privkeys are ~55MB and
+        // unused), plus a manifest filtered to this pod's validators.
+        let (_, start, end) = ranges
+            .iter()
+            .find(|(n, _, _)| n == entry_name)
+            .cloned()
+            .unwrap_or((entry_name.clone(), 0, 0));
+        if hash_sig_dir.exists() && end > start {
+            let _ = Command::new("kubectl")
+                .args([
+                    "--context", context, "exec", pod_name, "-c", INIT_C, "-n",
+                    namespace, "--", "mkdir", "-p", "/config/hash-sig-keys",
+                ])
+                .status();
+            for idx in start..end {
+                for role in ["attester", "proposer"] {
+                    for kind in ["sk", "pk"] {
+                        let fname = format!("validator_{idx}_{role}_key_{kind}.ssz");
+                        let src = hash_sig_dir.join(&fname);
+                        if src.exists() {
+                            cp(&src, &format!("/config/hash-sig-keys/{fname}"))?;
+                        }
+                    }
+                }
+            }
+            if let Ok(manifest) = filtered_manifest(&hash_sig_dir, start, end) {
+                let tmp = genesis_dir.join(format!(".manifest-{entry_name}.yaml"));
+                fs::write(&tmp, manifest)?;
+                let _ = cp(&tmp, "/config/hash-sig-keys/validator-keys-manifest.yaml");
+                let _ = fs::remove_file(&tmp);
+            }
+        }
+
+        // Drop the sentinel — releases the init container; the client starts once.
+        let status = Command::new("kubectl")
+            .args([
+                "--context", context, "exec", pod_name, "-c", INIT_C, "-n",
+                namespace, "--", "touch", "/config/.ready",
+            ])
+            .status()?;
+        if !status.success() {
+            bail!("Failed to release init sentinel for {pod_name}");
+        }
+        println!("  injected {entry_name} (validators {start}..{end})");
     }
 
     Ok(())
@@ -751,9 +1025,13 @@ fn helm_install(
     namespace: &str,
     chart_dir: &PathBuf,
     output_dir: &PathBuf,
+    metrics_enabled: bool,
 ) -> Result<()> {
     let values_path = output_dir.join("helm-values.yaml");
 
+    // The ServiceMonitor needs the Prometheus Operator CRD; skip it when metrics
+    // aren't installed so the deploy doesn't fail on a missing CRD.
+    let prometheus_set = format!("prometheus.enabled={metrics_enabled}");
     let status = Command::new("helm")
         .args([
             "install",
@@ -763,6 +1041,8 @@ fn helm_install(
             &values_path.display().to_string(),
             "--set",
             "genesis.external=true",
+            "--set",
+            &prometheus_set,
             "-n",
             namespace,
             "--kube-context",

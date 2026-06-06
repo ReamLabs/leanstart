@@ -31,6 +31,10 @@ pub struct GenesisValues {
     pub storage_class: String,
     #[serde(rename = "storageSize")]
     pub storage_size: String,
+    /// Multi-node "injected" mode: no shared genesis PVC; the orchestrator
+    /// gates the init container and copies IP-correct genesis + per-pod keys
+    /// straight into /config. False = legacy kind path (ConfigMap + shared PVC).
+    pub injected: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,6 +50,11 @@ pub struct ClientValues {
     /// Attestation subnet this pod belongs to (0-based). Surfaced for K8s
     /// labelling / kubectl filtering when running multi-subnet devnets.
     pub subnet: u32,
+    /// Host to pin this pod to via `nodeSelector: leanstart.io/host=<host>`,
+    /// from the `@host` spec suffix. When None the chart applies
+    /// topologySpreadConstraints so the pod auto-spreads across nodes.
+    #[serde(rename = "nodeSelectorHost", skip_serializing_if = "Option::is_none")]
+    pub node_selector_host: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -115,6 +124,7 @@ pub fn generate_helm_values(
             seccomp_unconfined: client_def.seccomp_unconfined,
             has_http_port: client_def.has_http_port,
             subnet: entry.subnet,
+            node_selector_host: entry.host.clone(),
         });
     }
 
@@ -125,6 +135,7 @@ pub fn generate_helm_values(
             pvc_name: "genesis-data".into(),
             storage_class: spec.storage_class.clone().unwrap_or_default(),
             storage_size: "5Gi".into(),
+            injected: spec.injected,
         },
         clients,
         init_scripts: InitScriptsValues {
@@ -162,6 +173,9 @@ pub fn generate_pod_secrets(
     output_dir: &Path,
 ) -> Result<()> {
     let secrets_dir = output_dir.join("secrets");
+    // Clear stale secret manifests from prior runs so we don't apply secrets for
+    // clients/pods that aren't part of this devnet.
+    let _ = fs::remove_dir_all(&secrets_dir);
     fs::create_dir_all(&secrets_dir)?;
 
     for entry in &vc.validators {

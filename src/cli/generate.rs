@@ -65,6 +65,11 @@ pub struct GenerateArgs {
     /// Override config.attestation_committee_count. Defaults to --subnets.
     #[arg(long)]
     pub attestation_committee_count: Option<u32>,
+
+    /// Generate for a remote multi-node cluster: emit injected-mode Helm values
+    /// (no shared genesis PVC; keys/genesis injected per-pod at deploy time).
+    #[arg(long)]
+    pub injected: bool,
 }
 
 impl GenerateArgs {
@@ -114,6 +119,7 @@ fn run_inner(args: GenerateArgs) -> Result<()> {
         bootnode_count: args.bootnode_count,
         subnets: args.subnets,
         attestation_committee_count: args.attestation_committee_count,
+        injected: args.injected,
     };
 
     let genesis_dir = args.output_dir.join("genesis");

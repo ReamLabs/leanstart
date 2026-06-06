@@ -31,6 +31,11 @@ pub struct DevnetSpec {
     /// Explicit override for `config.attestation_committee_count`. Defaults to
     /// `subnets` when None.
     pub attestation_committee_count: Option<u32>,
+    /// Multi-node "injected" peering/key delivery mode (set for remote clusters,
+    /// i.e. `--skip-kind`). When true the orchestrator gates the init container
+    /// and injects IP-correct genesis + per-pod keys instead of using the
+    /// kind-only shared PVC + container-restart path.
+    pub injected: bool,
 }
 
 /// Maximum number of subnets supported (matches lean-quickstart MAX_SUBNETS).
@@ -41,20 +46,16 @@ pub const MAX_SUBNETS: u32 = 5;
 pub struct ClientAllocation {
     pub name: String,
     pub instances: u32,
+    /// Optional host to pin this client's pods to, from the `@host` suffix
+    /// (e.g. `ream:3@nbg1`). Maps to the node label `leanstart.io/host=<host>`.
+    /// `None` => pods auto-spread across all nodes.
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 impl DevnetSpec {
-    /// Return (client_name, validator_count_per_subnet) for each client.
-    /// Each instance gets `validators_per_pod` validators. Multiplied by `subnets`
-    /// when expanded into actual nodes.
-    pub fn validator_counts(&self) -> Vec<(String, u32)> {
-        self.clients
-            .iter()
-            .map(|c| (c.name.clone(), c.instances * self.validators_per_pod))
-            .collect()
-    }
-
     /// Total number of validators across all clients (counts every subnet).
+    #[allow(dead_code)] // used by integration tests
     pub fn total_validators(&self) -> u32 {
         self.clients.iter().map(|c| c.instances).sum::<u32>()
             * self.validators_per_pod
@@ -68,20 +69,62 @@ impl DevnetSpec {
     }
 }
 
-/// Parse a client spec string like "ream", "zeam:2", or "grandine:5".
+/// Parse a client spec string like "ream", "zeam:2", "grandine:5", or with a
+/// host pin: "ream:3@nbg1", "zeam@nbg2".
+///
+/// Grammar: `<name>[:<count>][@<host>]`. The `@host` pins the client's pods to
+/// the node labelled `leanstart.io/host=<host>`; omitting it auto-spreads.
 pub fn parse_client_spec(spec: &str) -> anyhow::Result<ClientAllocation> {
-    let parts: Vec<&str> = spec.split(':').collect();
+    // Peel off an optional "@host" suffix first.
+    let (left, host) = match spec.split_once('@') {
+        Some((l, h)) => {
+            if h.is_empty() {
+                anyhow::bail!("Empty host in client spec '{spec}'. Use 'name:count@host'");
+            }
+            if !is_dns_label(h) {
+                anyhow::bail!(
+                    "Invalid host '{h}' in '{spec}'. Hosts must be lowercase \
+                     alphanumeric or '-' (a Kubernetes label value)"
+                );
+            }
+            (l, Some(h.to_string()))
+        }
+        None => (spec, None),
+    };
+
+    let parts: Vec<&str> = left.split(':').collect();
     match parts.len() {
-        1 => Ok(ClientAllocation {
+        1 if !parts[0].is_empty() => Ok(ClientAllocation {
             name: parts[0].to_string(),
             instances: 1,
+            host,
         }),
-        2 => Ok(ClientAllocation {
+        2 if !parts[0].is_empty() => Ok(ClientAllocation {
             name: parts[0].to_string(),
             instances: parts[1]
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid instance count in '{spec}'"))?,
+            host,
         }),
-        _ => anyhow::bail!("Invalid client spec '{spec}'. Use 'name' or 'name:count'"),
+        _ => anyhow::bail!(
+            "Invalid client spec '{spec}'. Use 'name', 'name:count', or 'name:count@host'"
+        ),
     }
+}
+
+/// Whether `s` is a valid Kubernetes label value usable as a `@host` token:
+/// non-empty, <=63 chars, alphanumeric/`-`/`_`/`.`, starting and ending
+/// alphanumeric. We keep it conservative (DNS-label-ish) since it lands in a
+/// `nodeSelector`.
+fn is_dns_label(s: &str) -> bool {
+    if s.is_empty() || s.len() > 63 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    let alnum = |b: u8| b.is_ascii_alphanumeric();
+    if !alnum(bytes[0]) || !alnum(bytes[bytes.len() - 1]) {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }

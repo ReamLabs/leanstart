@@ -10,6 +10,24 @@ data:
     #!/bin/sh
     set -e
 
+    # Injected (multi-node) mode: the orchestrator deposits the final, IP-correct
+    # genesis files + this pod's hash-sig keys + node key directly into /config
+    # while we wait here, then drops a /config/.ready sentinel. We must NOT copy
+    # stale placeholder genesis from the ConfigMap/PVC in this mode.
+    if [ "$INJECTED" = "true" ]; then
+      echo "==> Injected mode: waiting for orchestrator to populate /config..."
+      i=0
+      while [ ! -f /config/.ready ]; do
+        i=$((i + 1))
+        if [ $((i % 30)) -eq 0 ]; then echo "    still waiting for /config/.ready (${i}s)"; fi
+        sleep 1
+      done
+      echo "==> Sentinel found. Files in /config:"
+      ls -la /config/
+      ls -la /config/hash-sig-keys/ 2>/dev/null || echo "  (no hash-sig-keys directory)"
+      exit 0
+    fi
+
     echo "==> Copying shared config to working directory..."
     cp /config-shared/* /config/ 2>/dev/null || true
 

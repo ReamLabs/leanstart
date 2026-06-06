@@ -15,6 +15,10 @@ pub struct ValidatorEntry {
     /// Client type prefix (e.g. "zeam"). Persisted so we don't have to parse `name`.
     #[serde(skip)]
     pub client: String,
+    /// Host to pin this pod to (from `@host`), or None to auto-spread. Deploy-time
+    /// metadata only — not part of the genesis input, so skipped in serde.
+    #[serde(skip)]
+    pub host: Option<String>,
     pub privkey: String,
     #[serde(rename = "enrFields")]
     pub enr_fields: EnrFields,
@@ -72,7 +76,6 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
         );
     }
 
-    let client_counts = spec.validator_counts();
     let mut validators = Vec::new();
     let mut global_pod_index: u32 = 0;
     let multi_subnet = spec.subnets > 1;
@@ -80,16 +83,21 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
     for subnet_idx in 0..spec.subnets {
         let mut first_pod_in_subnet = true;
 
-        for (client_name, validator_count) in &client_counts {
+        // Iterate the client allocations directly (rather than validator_counts())
+        // so each entry can carry its `@host` placement. All subnet replicas of a
+        // pinned client land on the same host.
+        for client in &spec.clients {
+            let client_name = &client.name;
+            let validator_count = client.instances * spec.validators_per_pod;
             let client_def = get_client(client_name)
                 .with_context(|| format!("Unknown client: {client_name}"))?;
 
-            if *validator_count == 0 {
+            if validator_count == 0 {
                 bail!("Client {client_name} has 0 validators allocated");
             }
 
             let pod_count = validator_count.div_ceil(spec.validators_per_pod);
-            let mut remaining = *validator_count;
+            let mut remaining = validator_count;
 
             for pod_idx in 0..pod_count {
                 let count = remaining.min(spec.validators_per_pod);
@@ -107,6 +115,7 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
                 let entry = ValidatorEntry {
                     name,
                     client: client_name.clone(),
+                    host: client.host.clone(),
                     privkey,
                     enr_fields: EnrFields {
                         ip: "0.0.0.0".to_string(),
