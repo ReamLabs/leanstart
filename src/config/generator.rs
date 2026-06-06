@@ -82,6 +82,11 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
 
     for subnet_idx in 0..spec.subnets {
         let mut first_pod_in_subnet = true;
+        // Pod index counter per client name, so the SAME client can appear in
+        // multiple allocations with different @host pins and still get unique,
+        // continuous pod names (e.g. ream:1@nbg1 ream:2@nbg2 -> ream_0..ream_2).
+        let mut per_client_idx: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
 
         // Iterate the client allocations directly (rather than validator_counts())
         // so each entry can carry its `@host` placement. All subnet replicas of a
@@ -99,9 +104,16 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
             let pod_count = validator_count.div_ceil(spec.validators_per_pod);
             let mut remaining = validator_count;
 
-            for pod_idx in 0..pod_count {
+            for _ in 0..pod_count {
                 let count = remaining.min(spec.validators_per_pod);
                 remaining -= count;
+
+                let pod_idx = {
+                    let e = per_client_idx.entry(client_name.clone()).or_insert(0);
+                    let v = *e;
+                    *e += 1;
+                    v
+                };
 
                 let name = if multi_subnet {
                     format!("{client_name}_s{subnet_idx}_p{pod_idx}")

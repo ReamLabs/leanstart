@@ -74,6 +74,30 @@ fn test_generate_validator_config_basic() {
 }
 
 #[test]
+fn test_repeated_client_allocations_continuous_naming() {
+    // ream:1@nbg1 ream:2@nbg2 ream:2@nbg3 -> ream_0..ream_4, ream_0 aggregator,
+    // hosts carried through per allocation.
+    let mut spec = test_spec(vec![]);
+    spec.clients = ["ream:1@nbg1", "ream:2@nbg2", "ream:2@nbg3"]
+        .iter()
+        .map(|s| parse_client_spec(s).unwrap())
+        .collect();
+    let vc = generate_validator_config(&spec).unwrap();
+
+    let names: Vec<_> = vc.validators.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, ["ream_0", "ream_1", "ream_2", "ream_3", "ream_4"]);
+
+    assert!(vc.validators[0].is_aggregator);
+    assert!(vc.validators[1..].iter().all(|v| !v.is_aggregator));
+
+    assert_eq!(vc.validators[0].host.as_deref(), Some("nbg1"));
+    assert_eq!(vc.validators[1].host.as_deref(), Some("nbg2"));
+    assert_eq!(vc.validators[2].host.as_deref(), Some("nbg2"));
+    assert_eq!(vc.validators[3].host.as_deref(), Some("nbg3"));
+    assert_eq!(vc.validators[4].host.as_deref(), Some("nbg3"));
+}
+
+#[test]
 fn test_generate_multi_instance() {
     let spec = test_spec(vec![("ream", 1), ("zeam", 2)]);
     let vc = generate_validator_config(&spec).unwrap();

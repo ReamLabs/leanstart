@@ -36,6 +36,13 @@ Once running, Grafana is at **http://localhost:3000** (`admin` / `admin`) and Pr
 
 ---
 
+## Multi-machine devnets
+
+To spread one devnet across several servers (and pin clients to specific hosts with
+`name:count@host`), see **[docs/distributed-devnets.md](docs/distributed-devnets.md)**.
+
+---
+
 ## Supported clients
 
 | Client | Image |
