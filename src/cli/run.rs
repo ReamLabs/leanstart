@@ -95,7 +95,9 @@ pub struct RunArgs {
     pub skip_metrics: bool,
 }
 
-pub fn run(args: RunArgs) -> Result<()> {
+pub fn run(mut args: RunArgs) -> Result<()> {
+    apply_profile(&mut args);
+
     // Each invocation writes to its own timestamped subdir under
     // <output_dir>/runs/, with a `latest` symlink pointing at the newest one.
     fs::create_dir_all(&args.output_dir)
@@ -110,6 +112,42 @@ pub fn run(args: RunArgs) -> Result<()> {
     let result = run_inner(args, &run_dir);
     crate::logging::shutdown();
     result
+}
+
+/// Fill unset CLI args from `~/.leanstart/config.yaml` so a remote cluster can be
+/// targeted without repeating `--skip-kind --context ... --skip-metrics`. Explicit
+/// flags always win; the profile only provides defaults.
+fn apply_profile(args: &mut RunArgs) {
+    let p = crate::config::profile::Profile::load();
+    if !p.is_active() {
+        return;
+    }
+    if args.context.is_none() {
+        args.context = p.context.clone();
+    }
+    if args.storage_class.is_none() {
+        args.storage_class = p.storage_class.clone();
+    }
+    // Bool flags can't distinguish "unset" from "explicitly false", so the
+    // profile can only turn them on (its purpose is remote-by-default).
+    if p.skip_kind == Some(true) {
+        args.skip_kind = true;
+    }
+    if p.skip_metrics == Some(true) {
+        args.skip_metrics = true;
+    }
+    // Only override the namespace if the user left it at the default.
+    if args.namespace == "lean-devnet" {
+        if let Some(ns) = p.namespace.clone() {
+            args.namespace = ns;
+        }
+    }
+    println!(
+        "Using profile ~/.leanstart/config.yaml (context={}, skip_kind={}, skip_metrics={})",
+        args.context.as_deref().unwrap_or("-"),
+        args.skip_kind,
+        args.skip_metrics
+    );
 }
 
 fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {

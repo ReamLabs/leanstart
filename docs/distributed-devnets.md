@@ -139,6 +139,21 @@ block in an init container, leanstart reads their assigned IPs, regenerates the 
 peer records (ENRs) with the real IPs, injects genesis + each pod's keys into the pods,
 and releases them — so every client starts once with correct cross-machine peering.
 
+### Optional: drop the flags with a profile
+
+Create `~/.leanstart/config.yaml` so `leanstart` targets your cluster by default — then a
+bare `leanstart ream:1@nbg1 ream:2@nbg2 ream:2@nbg3` just works:
+
+```yaml
+# ~/.leanstart/config.yaml
+context: leannet      # your kubeconfig context
+skip_kind: true       # deploy to that cluster (don't create a local kind)
+skip_metrics: true    # don't reinstall the metrics stack each run (see Step 4)
+namespace: lean-devnet
+```
+
+Explicit CLI flags always override the profile.
+
 ### Verify
 
 ```bash
