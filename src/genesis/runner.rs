@@ -96,6 +96,102 @@ pub fn run_genesis_tool(output_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// devnet5 keygen + genesis-config in one shot, via the ream image's
+/// `generate_validator_registry`. Produces, in `output_dir`:
+///   - config-devnet4.yaml       -> renamed to config.yaml (GENESIS_VALIDATORS, NUM_VALIDATORS)
+///   - annotated_validators.yaml (ream_N -> {index, pubkey_hex, privkey_file})
+///   - hash-sig-keys/validator_N_{attestation,proposal}_sk.ssz (+ manifest)
+///
+/// These are the devnet5 hash-sig keys (different scheme from devnet4's
+/// hash-sig-cli); using them is what lets devnet5 ream finalize.
+pub fn run_validator_registry(
+    ream_image: &str,
+    num_nodes: u32,
+    validators_per_node: u32,
+    output_dir: &Path,
+) -> Result<()> {
+    let parent_dir = output_dir
+        .parent()
+        .context("output_dir has no parent directory")?;
+    let genesis_rel = output_dir
+        .file_name()
+        .context("output_dir has no directory name")?
+        .to_string_lossy();
+
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+
+    let status = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--user",
+            &format!("{uid}:{gid}"),
+            "-v",
+            &format!("{}:/data", parent_dir.display()),
+            ream_image,
+            "--data-dir",
+            &format!("/data/{genesis_rel}"),
+            "--ephemeral",
+            "generate_validator_registry",
+            "--output",
+            &format!("/data/{genesis_rel}"),
+            "--number-of-nodes",
+            &num_nodes.to_string(),
+            "--number-of-validators-per-node",
+            &validators_per_node.to_string(),
+        ])
+        .status()
+        .context("Failed to run ream generate_validator_registry")?;
+
+    if !status.success() {
+        bail!("ream generate_validator_registry exited with status {status}");
+    }
+
+    // The tool emits config-devnet4.yaml; downstream expects config.yaml.
+    let from = output_dir.join("config-devnet4.yaml");
+    let to = output_dir.join("config.yaml");
+    if from.exists() {
+        fs::rename(&from, &to)
+            .with_context(|| format!("renaming {} -> {}", from.display(), to.display()))?;
+    }
+
+    println!("Generated devnet5 validator registry in {}", output_dir.display());
+    Ok(())
+}
+
+/// Overwrite the `GENESIS_TIME:` line in config.yaml with `now + offset`.
+/// generate_validator_registry hardcodes a fixed past time; the devnet needs a
+/// genesis a little in the future so pods are live before it.
+pub fn set_genesis_time(output_dir: &Path, genesis_offset: u32) -> Result<()> {
+    let genesis_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("System clock before UNIX epoch")?
+        .as_secs()
+        + genesis_offset as u64;
+
+    let path = output_dir.join("config.yaml");
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let mut out = String::new();
+    let mut replaced = false;
+    for line in content.lines() {
+        if line.trim_start().starts_with("GENESIS_TIME:") {
+            out.push_str(&format!("GENESIS_TIME: {genesis_time}\n"));
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !replaced {
+        out.push_str(&format!("GENESIS_TIME: {genesis_time}\n"));
+    }
+    fs::write(&path, out)?;
+    println!("Set GENESIS_TIME to {genesis_time} ({genesis_offset}s from now)");
+    Ok(())
+}
+
 /// Layout of the hash-sig-cli validator-keys-manifest.yaml.
 enum ManifestLayout {
     /// devnet4+: separate attester and proposer pubkeys per validator.

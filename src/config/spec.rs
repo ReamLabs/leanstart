@@ -36,6 +36,14 @@ pub struct DevnetSpec {
     /// and injects IP-correct genesis + per-pod keys instead of using the
     /// kind-only shared PVC + container-restart path.
     pub injected: bool,
+    /// devnet5 mode: generate keys + genesis via `ream generate_validator_registry`
+    /// (ream-native, hash-sig scheme devnet5 accepts) instead of the devnet4
+    /// `hash-sig-cli` + `eth-beacon-genesis` GENESIS_VALIDATORS path. ream-only.
+    pub devnet5: bool,
+    /// Make every pod an aggregator (--is-aggregator) instead of just the first
+    /// pod per subnet. Removes the single-aggregator dependency so each
+    /// validator's attestation is always aggregated/broadcast every slot.
+    pub all_aggregators: bool,
 }
 
 /// Maximum number of subnets supported (matches lean-quickstart MAX_SUBNETS).

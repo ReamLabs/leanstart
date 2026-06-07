@@ -26,6 +26,10 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
+      {{- if $.Values.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       {{- if $client.nodeSelectorHost }}
       # Pinned via `@host`: schedule onto the node labelled leanstart.io/host=<host>.
       nodeSelector:

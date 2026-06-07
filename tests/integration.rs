@@ -26,6 +26,8 @@ fn test_spec(clients: Vec<(&str, u32)>) -> DevnetSpec {
         subnets: 1,
         attestation_committee_count: None,
         injected: false,
+        devnet5: false,
+        all_aggregators: false,
     }
 }
 

@@ -11,7 +11,8 @@ use crate::config::generator::{
 };
 use crate::config::spec::{parse_client_spec, ClientAllocation, DevnetSpec, MAX_SUBNETS};
 use crate::genesis::runner::{
-    append_genesis_validators, generate_annotated_validators, run_genesis_tool, write_config_yaml,
+    append_genesis_validators, generate_annotated_validators, run_genesis_tool,
+    run_validator_registry, set_genesis_time, write_config_yaml,
 };
 use crate::k8s::values::{generate_helm_values, generate_pod_secrets, write_helm_values};
 use crate::keys::keygen::{generate_hash_sig_keys, write_node_keys};
@@ -93,6 +94,20 @@ pub struct RunArgs {
     /// Skip installing kube-prometheus-stack (e.g. if it is already installed).
     #[arg(long)]
     pub skip_metrics: bool,
+
+    /// devnet5 mode: generate keys + genesis with the devnet5 ream image's
+    /// `generate_validator_registry` instead of the devnet4 hash-sig-cli path.
+    /// ream-only. Required when running `snaiyer1/ream:latest-devnet5`.
+    #[arg(long)]
+    pub devnet5: bool,
+
+    /// Make every pod an aggregator (not just the first per subnet).
+    #[arg(long)]
+    pub all_aggregators: bool,
+
+    /// Use host networking for pods (bypass flannel/CNI; 1 pod per node).
+    #[arg(long)]
+    pub host_network: bool,
 }
 
 pub fn run(mut args: RunArgs) -> Result<()> {
@@ -176,6 +191,12 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         );
     }
 
+    // devnet5 keygen (ream generate_validator_registry) only emits `ream_N`
+    // node ids, so the devnet must be ream-only.
+    if args.devnet5 && clients.iter().any(|c| c.name != "ream") {
+        bail!("--devnet5 currently supports ream-only devnets");
+    }
+
     let total_instances: u32 = clients.iter().map(|c| c.instances).sum::<u32>() * args.subnets;
     let total_validators = total_instances * args.validators_per_pod;
 
@@ -220,6 +241,8 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         // Remote multi-node clusters (--skip-kind) use the injected gated-init
         // path; local kind keeps the legacy shared-PVC + restart path.
         injected: args.skip_kind,
+        devnet5: args.devnet5,
+        all_aggregators: args.all_aggregators,
     };
 
     let genesis_dir = args.output_dir.join("genesis");
@@ -237,22 +260,25 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         .collect();
     write_node_keys(&key_pairs, &genesis_dir)?;
 
-    // Step 2: Generate genesis artifacts (hash-sig keys + eth-beacon-genesis +
-    // GENESIS_VALIDATORS + annotated_validators.yaml). Pod IPs are placeholders
-    // here — fix_peer_ips re-runs the latter steps after pods get real IPs.
+    // Step 2: Generate keys + genesis. Pod IPs are placeholders here; the peer
+    // step re-runs nodes.yaml generation after pods get real IPs.
     let total_validators_for_keys: u32 = vc.validators.iter().map(|v| v.count).sum();
-    println!(
-        "==> Generating hash-sig keys for {total_validators_for_keys} validators..."
-    );
-    generate_hash_sig_keys(total_validators_for_keys, args.active_epoch, &genesis_dir)?;
+    if spec.devnet5 {
+        generate_devnet5_genesis(&spec, &vc, &genesis_dir, args.genesis_offset)?;
+    } else {
+        println!(
+            "==> Generating hash-sig keys for {total_validators_for_keys} validators..."
+        );
+        generate_hash_sig_keys(total_validators_for_keys, args.active_epoch, &genesis_dir)?;
 
-    println!("==> Writing config.yaml...");
-    write_config_yaml(&vc, args.genesis_offset, &genesis_dir)?;
+        println!("==> Writing config.yaml...");
+        write_config_yaml(&vc, args.genesis_offset, &genesis_dir)?;
 
-    println!("==> Running genesis generation...");
-    run_genesis_tool(&genesis_dir)?;
-    append_genesis_validators(&vc, &genesis_dir)?;
-    generate_annotated_validators(&genesis_dir)?;
+        println!("==> Running genesis generation...");
+        run_genesis_tool(&genesis_dir)?;
+        append_genesis_validators(&vc, &genesis_dir)?;
+        generate_annotated_validators(&genesis_dir)?;
+    }
 
     if args.config_only {
         println!("==> Generating Helm values...");
@@ -304,6 +330,7 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         &chart_dir,
         &args.output_dir,
         !args.skip_metrics,
+        args.host_network,
     )?;
 
     // Derive expected pod names from the validator config.
@@ -339,6 +366,7 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
             &genesis_dir,
             args.genesis_offset,
             &pod_names,
+            spec.devnet5,
         )?;
 
         println!("==> Waiting for pods to be ready...");
@@ -801,6 +829,7 @@ fn inject_peers_gated(
     genesis_dir: &PathBuf,
     genesis_offset: u32,
     pods: &[(String, String)],
+    devnet5: bool,
 ) -> Result<()> {
     // 1. Read real pod IPs (entry_name -> ip), in pod (== entry) order.
     let mut ips: Vec<(String, String)> = Vec::new();
@@ -838,68 +867,150 @@ fn inject_peers_gated(
 
     // 3. Regenerate genesis with real IPs (re-signed ENRs). Hash-sig keys are
     //    untouched — they already exist under genesis_dir/hash-sig-keys/.
-    for f in &[
-        "config.yaml", "genesis.ssz", "genesis.json", "nodes.yaml",
-        "validators.yaml", "annotated_validators.yaml",
-    ] {
-        let _ = fs::remove_file(genesis_dir.join(f));
+    if devnet5 {
+        // Only nodes.yaml depends on IPs; keep the registry config/annotated/keys.
+        regen_devnet5_nodes(vc, genesis_dir, genesis_offset)?;
+    } else {
+        for f in &[
+            "config.yaml", "genesis.ssz", "genesis.json", "nodes.yaml",
+            "validators.yaml", "annotated_validators.yaml",
+        ] {
+            let _ = fs::remove_file(genesis_dir.join(f));
+        }
+        write_config_yaml(vc, genesis_offset, genesis_dir)?;
+        run_genesis_tool(genesis_dir)?;
+        append_genesis_validators(vc, genesis_dir)?;
+        generate_annotated_validators(genesis_dir)?;
     }
-    write_config_yaml(vc, genesis_offset, genesis_dir)?;
-    run_genesis_tool(genesis_dir)?;
-    append_genesis_validators(vc, genesis_dir)?;
-    generate_annotated_validators(genesis_dir)?;
 
-    // 4. Per-pod injection into the waiting init container.
-    const INIT_C: &str = "resolve-peers";
-    let genesis_files = [
-        "config.yaml", "validators.yaml", "annotated_validators.yaml",
-        "nodes.yaml", "genesis.json", "genesis.ssz", "validator-config.yaml",
-    ];
-    let hash_sig_dir = genesis_dir.join("hash-sig-keys");
+    // 4. Copy each pod's payload (genesis + node key + its own hash-sig keys)
+    //    into its waiting init container, IN PARALLEL. Per-pod copies are slow
+    //    (~17 MB of hash-sig keys over `kubectl cp`); serializing them staggered
+    //    pod starts by ~30s each, so late validators missed genesis and the
+    //    chain couldn't converge. Overlapping the copies keeps starts tight.
+    // devnet5 has no genesis.ssz/json/validators.yaml (genesis derives from config).
+    let genesis_files: &[&str] = if devnet5 {
+        &["config.yaml", "annotated_validators.yaml", "nodes.yaml", "validator-config.yaml"]
+    } else {
+        &[
+            "config.yaml", "validators.yaml", "annotated_validators.yaml",
+            "nodes.yaml", "genesis.json", "genesis.ssz", "validator-config.yaml",
+        ]
+    };
     let ranges = pod_validator_indices(vc);
 
+    let mut handles = Vec::new();
     for (pod_name, entry_name) in pods {
-        let cp = |src: &Path, dest: &str| -> Result<()> {
-            let status = Command::new("kubectl")
-                .args([
-                    "--context", context, "cp",
-                    &src.display().to_string(),
-                    &format!("{namespace}/{pod_name}:{dest}"),
-                    "-c", INIT_C,
-                ])
-                .status()?;
-            if !status.success() {
-                bail!("kubectl cp {} -> {pod_name}:{dest} failed", src.display());
-            }
-            Ok(())
-        };
-
-        for f in &genesis_files {
-            let src = genesis_dir.join(f);
-            if src.exists() {
-                cp(&src, &format!("/config/{f}"))?;
-            }
-        }
-
-        let key_src = genesis_dir.join(format!("{entry_name}.key"));
-        if key_src.exists() {
-            cp(&key_src, &format!("/config/{entry_name}.key"))?;
-        }
-
-        // This pod's hash-sig keys: .ssz only (.json privkeys are ~55MB and
-        // unused), plus a manifest filtered to this pod's validators.
         let (_, start, end) = ranges
             .iter()
             .find(|(n, _, _)| n == entry_name)
             .cloned()
             .unwrap_or((entry_name.clone(), 0, 0));
-        if hash_sig_dir.exists() && end > start {
-            let _ = Command::new("kubectl")
-                .args([
-                    "--context", context, "exec", pod_name, "-c", INIT_C, "-n",
-                    namespace, "--", "mkdir", "-p", "/config/hash-sig-keys",
-                ])
-                .status();
+        let context = context.to_string();
+        let namespace = namespace.to_string();
+        let genesis_dir = genesis_dir.clone();
+        let pod_name = pod_name.clone();
+        let entry_name = entry_name.clone();
+        handles.push(std::thread::spawn(move || {
+            copy_pod_payload(
+                &context, &namespace, &genesis_dir, &pod_name, &entry_name, start,
+                end, genesis_files, devnet5,
+            )
+        }));
+    }
+    for h in handles {
+        h.join()
+            .map_err(|_| anyhow::anyhow!("injection thread panicked"))??;
+    }
+
+    // 5. Release ALL init containers back-to-back so every client starts within
+    //    ~1s of the others — they must be live before genesis to converge on a
+    //    single head and reach a 2/3 voting quorum.
+    const INIT_C: &str = "resolve-peers";
+    for (pod_name, _) in pods {
+        let status = Command::new("kubectl")
+            .args([
+                "--context", context, "exec", pod_name, "-c", INIT_C, "-n",
+                namespace, "--", "touch", "/config/.ready",
+            ])
+            .status()?;
+        if !status.success() {
+            bail!("Failed to release init sentinel for {pod_name}");
+        }
+    }
+    println!("  released {} pods together", pods.len());
+
+    Ok(())
+}
+
+/// Copy one pod's genesis files + node key + its own hash-sig keys into the
+/// waiting `resolve-peers` init container. Does NOT drop the sentinel — the
+/// caller releases all pods together once every copy has finished. Safe to run
+/// concurrently across pods (each writes a uniquely-named temp manifest).
+#[allow(clippy::too_many_arguments)]
+fn copy_pod_payload(
+    context: &str,
+    namespace: &str,
+    genesis_dir: &Path,
+    pod_name: &str,
+    entry_name: &str,
+    start: u32,
+    end: u32,
+    genesis_files: &[&str],
+    devnet5: bool,
+) -> Result<()> {
+    const INIT_C: &str = "resolve-peers";
+    let cp = |src: &Path, dest: &str| -> Result<()> {
+        let status = Command::new("kubectl")
+            .args([
+                "--context", context, "cp",
+                &src.display().to_string(),
+                &format!("{namespace}/{pod_name}:{dest}"),
+                "-c", INIT_C,
+            ])
+            .status()?;
+        if !status.success() {
+            bail!("kubectl cp {} -> {pod_name}:{dest} failed", src.display());
+        }
+        Ok(())
+    };
+
+    for f in genesis_files {
+        let src = genesis_dir.join(f);
+        if src.exists() {
+            cp(&src, &format!("/config/{f}"))?;
+        }
+    }
+
+    let key_src = genesis_dir.join(format!("{entry_name}.key"));
+    if key_src.exists() {
+        cp(&key_src, &format!("/config/{entry_name}.key"))?;
+    }
+
+    // This pod's hash-sig keys: .ssz only (.json privkeys are ~55MB and unused),
+    // plus a manifest filtered to this pod's validators.
+    let hash_sig_dir = genesis_dir.join("hash-sig-keys");
+    if hash_sig_dir.exists() && end > start {
+        let _ = Command::new("kubectl")
+            .args([
+                "--context", context, "exec", pod_name, "-c", INIT_C, "-n",
+                namespace, "--", "mkdir", "-p", "/config/hash-sig-keys",
+            ])
+            .status();
+        if devnet5 {
+            // devnet5 (ream generate_validator_registry): validator_N_{attestation,
+            // proposal}_sk.ssz, no pubkey files, no manifest (annotated_validators
+            // is the registry ream reads).
+            for idx in start..end {
+                for role in ["attestation", "proposal"] {
+                    let fname = format!("validator_{idx}_{role}_sk.ssz");
+                    let src = hash_sig_dir.join(&fname);
+                    if src.exists() {
+                        cp(&src, &format!("/config/hash-sig-keys/{fname}"))?;
+                    }
+                }
+            }
+        } else {
             for idx in start..end {
                 for role in ["attester", "proposer"] {
                     for kind in ["sk", "pk"] {
@@ -918,20 +1029,55 @@ fn inject_peers_gated(
                 let _ = fs::remove_file(&tmp);
             }
         }
-
-        // Drop the sentinel — releases the init container; the client starts once.
-        let status = Command::new("kubectl")
-            .args([
-                "--context", context, "exec", pod_name, "-c", INIT_C, "-n",
-                namespace, "--", "touch", "/config/.ready",
-            ])
-            .status()?;
-        if !status.success() {
-            bail!("Failed to release init sentinel for {pod_name}");
-        }
-        println!("  injected {entry_name} (validators {start}..{end})");
     }
+    println!("  injected {entry_name} (validators {start}..{end})");
+    Ok(())
+}
 
+/// devnet5 keys + genesis: ream-native `generate_validator_registry` for keys,
+/// config (GENESIS_VALIDATORS), and annotated_validators, plus eth-beacon-genesis
+/// for `nodes.yaml` (ENRs are scheme-independent).
+fn generate_devnet5_genesis(
+    spec: &DevnetSpec,
+    vc: &ValidatorConfig,
+    genesis_dir: &PathBuf,
+    genesis_offset: u32,
+) -> Result<()> {
+    let ream = get_client("ream").context("devnet5 requires the ream client")?;
+    let num_nodes = vc.validators.len() as u32;
+
+    println!(
+        "==> Generating devnet5 keys + registry for {num_nodes} ream nodes ({})...",
+        ream.image
+    );
+    run_validator_registry(ream.image, num_nodes, spec.validators_per_pod, genesis_dir)?;
+    set_genesis_time(genesis_dir, genesis_offset)?;
+
+    println!("==> Generating nodes.yaml (ENRs)...");
+    regen_devnet5_nodes(vc, genesis_dir, genesis_offset)?;
+    Ok(())
+}
+
+/// Regenerate `nodes.yaml` (peer ENRs) via eth-beacon-genesis without disturbing
+/// the registry-produced config.yaml / annotated_validators.yaml / keys. We feed
+/// the tool a throwaway minimal config and restore the registry config after.
+fn regen_devnet5_nodes(
+    vc: &ValidatorConfig,
+    genesis_dir: &PathBuf,
+    genesis_offset: u32,
+) -> Result<()> {
+    let config_path = genesis_dir.join("config.yaml");
+    let registry_config = fs::read_to_string(&config_path).ok();
+
+    // eth-beacon-genesis input config (overwrites config.yaml temporarily) +
+    // run; only nodes.yaml is consumed.
+    write_config_yaml(vc, genesis_offset, genesis_dir)?;
+    run_genesis_tool(genesis_dir)?;
+
+    // Restore the registry config (GENESIS_VALIDATORS + correct GENESIS_TIME).
+    if let Some(cfg) = registry_config {
+        fs::write(&config_path, cfg)?;
+    }
     Ok(())
 }
 
@@ -1064,12 +1210,14 @@ fn helm_install(
     chart_dir: &PathBuf,
     output_dir: &PathBuf,
     metrics_enabled: bool,
+    host_network: bool,
 ) -> Result<()> {
     let values_path = output_dir.join("helm-values.yaml");
 
     // The ServiceMonitor needs the Prometheus Operator CRD; skip it when metrics
     // aren't installed so the deploy doesn't fail on a missing CRD.
     let prometheus_set = format!("prometheus.enabled={metrics_enabled}");
+    let host_net_set = format!("hostNetwork={host_network}");
     let status = Command::new("helm")
         .args([
             "install",
@@ -1081,6 +1229,8 @@ fn helm_install(
             "genesis.external=true",
             "--set",
             &prometheus_set,
+            "--set",
+            &host_net_set,
             "-n",
             namespace,
             "--kube-context",

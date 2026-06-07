@@ -70,6 +70,10 @@ pub struct GenerateArgs {
     /// (no shared genesis PVC; keys/genesis injected per-pod at deploy time).
     #[arg(long)]
     pub injected: bool,
+
+    /// devnet5 mode: keys + genesis via the ream image's generate_validator_registry.
+    #[arg(long)]
+    pub devnet5: bool,
 }
 
 impl GenerateArgs {
@@ -120,6 +124,8 @@ fn run_inner(args: GenerateArgs) -> Result<()> {
         subnets: args.subnets,
         attestation_committee_count: args.attestation_committee_count,
         injected: args.injected,
+        devnet5: args.devnet5,
+        all_aggregators: false,
     };
 
     let genesis_dir = args.output_dir.join("genesis");

@@ -139,7 +139,7 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
                     } else {
                         None
                     },
-                    is_aggregator: first_pod_in_subnet,
+                    is_aggregator: first_pod_in_subnet || spec.all_aggregators,
                     subnet: subnet_idx,
                     count,
                 };
