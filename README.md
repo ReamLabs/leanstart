@@ -47,7 +47,7 @@ To spread one devnet across several servers (and pin clients to specific hosts w
 
 | Client | Image |
 |---|---|
-| `ream` | `ghcr.io/reamlabs/ream:latest-devnet4` |
+| `ream` | `snaiyer1/ream:latest-devnet5` |
 | `zeam` | `blockblaz/zeam:devnet4` |
 | `grandine` | `sifrai/lean:devnet-4` |
 | `lantern` | `piertwo/lantern:v0.0.4` |
