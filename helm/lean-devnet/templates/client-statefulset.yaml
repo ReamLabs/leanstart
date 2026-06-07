@@ -80,6 +80,7 @@ spec:
       containers:
         - name: {{ $client.name }}
           image: {{ $client.image }}
+          imagePullPolicy: Always
           {{- if (index $client.args 0) }}
           args:
             {{- /*
