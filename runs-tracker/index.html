@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>leanstart · run tracker</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3; --muted:#8b949e;
+          --head:#58a6ff; --just:#d29922; --fin:#3fb950; --bad:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg); color:var(--fg); }
+  header { padding:14px 18px; border-bottom:1px solid var(--border); display:flex; align-items:baseline; gap:12px; }
+  header h1 { font-size:16px; margin:0; }
+  header .sub { color:var(--muted); font-size:12px; }
+  .wrap { display:flex; height:calc(100vh - 51px); }
+  #list { width:340px; border-right:1px solid var(--border); overflow:auto; }
+  #detail { flex:1; overflow:auto; padding:18px; }
+  .run { padding:10px 14px; border-bottom:1px solid var(--border); cursor:pointer; }
+  .run:hover { background:var(--panel); }
+  .run.active { background:#1f2630; }
+  .run .id { color:var(--head); }
+  .run .meta { color:var(--muted); font-size:12px; }
+  .badge { display:inline-block; padding:0 6px; border-radius:10px; font-size:11px; }
+  .ok { background:rgba(63,185,80,.15); color:var(--fin); }
+  .no { background:rgba(248,81,73,.15); color:var(--bad); }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:16px; }
+  .card h2 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  table { border-collapse:collapse; width:100%; }
+  td,th { text-align:left; padding:3px 10px 3px 0; }
+  th { color:var(--muted); font-weight:normal; }
+  .legend span { margin-right:14px; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:4px; }
+  pre { background:#0b0f14; border:1px solid var(--border); border-radius:6px; padding:10px; overflow:auto; max-height:420px; font-size:12px; }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+  .tab { padding:3px 10px; border:1px solid var(--border); border-radius:6px; cursor:pointer; color:var(--muted); }
+  .tab.active { color:var(--fg); background:#1f2630; }
+  .big { font-size:22px; }
+  .stat { display:inline-block; margin-right:26px; }
+  .stat .l { color:var(--muted); font-size:11px; display:block; }
+  a { color:var(--head); }
+</style>
+</head>
+<body>
+<header>
+  <h1>leanstart · run tracker</h1>
+  <span class="sub" id="count"></span>
+</header>
+<div class="wrap">
+  <div id="list">loading…</div>
+  <div id="detail"><span style="color:var(--muted)">select a run</span></div>
+</div>
+<script>
+const $ = (s, r=document) => r.querySelector(s);
+const esc = s => (s??"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+let RUNS = [];
+
+async function loadRuns() {
+  RUNS = await (await fetch("/api/runs")).json();
+  $("#count").textContent = RUNS.length + " runs";
+  $("#list").innerHTML = RUNS.map(r => {
+    const when = new Date(r.mtime*1000).toLocaleString();
+    const badge = r.error ? `<span class="badge no">error</span>`
+      : (r.finalized ? `<span class="badge ok">final ${r.max_finalized}</span>`
+                     : `<span class="badge no">no finality</span>`);
+    const clients = (r.clients||[]).map(c=>`${c.name}×${c.count}`).join(" ") || (r.summary||"");
+    return `<div class="run" data-id="${esc(r.id)}">
+      <div class="id">${esc(r.id)}</div>
+      <div class="meta">${esc(when)} · ${badge}</div>
+      <div class="meta">${esc(clients)}</div></div>`;
+  }).join("");
+  $("#list").querySelectorAll(".run").forEach(el =>
+    el.onclick = () => selectRun(el.dataset.id, el));
+}
+
+function chart(timelines) {
+  // merge all node points by index of finalized; pick the node with the most points
+  let best = [], name = null;
+  for (const [n, pts] of Object.entries(timelines)) if (pts.length > best.length) { best = pts; name = n; }
+  if (!best.length) return `<div style="color:var(--muted)">no finalization timeline parsed from logs</div>`;
+  const W=720, H=240, pad=34;
+  const xs = best.map((_,i)=>i);
+  const maxY = Math.max(1, ...best.map(p=>Math.max(p.head||0,p.justified||0,p.finalized||0)));
+  const sx = i => pad + (W-2*pad) * (best.length<2?0:i/(best.length-1));
+  const sy = v => H-pad - (H-2*pad) * ((v||0)/maxY);
+  const line = (key,color) => {
+    const seg = best.map((p,i)=>p[key]!=null?`${sx(i).toFixed(1)},${sy(p[key]).toFixed(1)}`:null).filter(Boolean).join(" ");
+    return seg ? `<polyline fill="none" stroke="${color}" stroke-width="2" points="${seg}"/>` : "";
+  };
+  return `<div class="legend">
+      <span><span class="sw" style="background:var(--head)"></span>head</span>
+      <span><span class="sw" style="background:var(--just)"></span>justified</span>
+      <span><span class="sw" style="background:var(--fin)"></span>finalized</span>
+      <span style="color:var(--muted)">source: ${esc(name)} · ${best.length} samples · max slot ${maxY}</span></div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px">
+      <line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="var(--border)"/>
+      <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${H-pad}" stroke="var(--border)"/>
+      <text x="${pad-4}" y="${pad}" fill="var(--muted)" font-size="10" text-anchor="end">${maxY}</text>
+      <text x="${pad-4}" y="${H-pad}" fill="var(--muted)" font-size="10" text-anchor="end">0</text>
+      ${line("head","#58a6ff")}${line("justified","#d29922")}${line("finalized","#3fb950")}
+    </svg>`;
+}
+
+async function selectRun(id, el) {
+  $("#list").querySelectorAll(".run").forEach(e=>e.classList.remove("active"));
+  if (el) el.classList.add("active");
+  $("#detail").innerHTML = "loading…";
+  const d = await (await fetch("/api/runs/"+encodeURIComponent(id))).json();
+  const s = d.summary || {};
+  const clients = (d.spec.clients||[]).map(c=>
+    `<tr><td>${esc(c.name)}×${c.count}</td><td style="color:var(--muted)">${esc(c.image)}</td></tr>`).join("");
+  const tabs = d.nodes.map((n,i)=>`<span class="tab${i?'':' active'}" data-log="${esc(n)}">${esc(n)}</span>`).join("");
+  $("#detail").innerHTML = `
+    <h2 style="margin-top:0">${esc(id)}</h2>
+    <div class="card">
+      <div class="stat"><span class="l">max finalized</span><span class="big" style="color:var(--fin)">${s.max_finalized||0}</span></div>
+      <div class="stat"><span class="l">max head</span><span class="big">${s.max_head||0}</span></div>
+      <div class="stat"><span class="l">finalized?</span><span class="big">${s.finalized?'✅':'❌'}</span></div>
+      <div class="stat"><span class="l">nodes</span><span class="big">${d.nodes.length}</span></div>
+    </div>
+    <div class="card"><h2>finalization timeline</h2>${chart(d.timelines)}</div>
+    <div class="card"><h2>spec</h2>
+      <div style="color:var(--muted);margin-bottom:6px">${esc(d.spec.summary||"")}</div>
+      <table>${clients}</table>
+      ${d.spec.command?`<pre>${esc(d.spec.command)}</pre>`:""}
+    </div>
+    <div class="card"><h2>node logs</h2>
+      <div class="tabs">${tabs}</div>
+      <pre id="logview">select a node</pre>
+    </div>
+    ${d.genesis?`<div class="card"><h2>genesis config.yaml</h2><pre>${esc(d.genesis)}</pre></div>`:""}`;
+  const show = async name => {
+    $("#logview").textContent = "loading…";
+    const t = await (await fetch(`/api/runs/${encodeURIComponent(id)}/log/${encodeURIComponent(name)}`)).text();
+    // show the tail (logs can be huge)
+    const lines = t.split("\n");
+    $("#logview").textContent = lines.slice(-600).join("\n");
+    $("#logview").scrollTop = $("#logview").scrollHeight;
+  };
+  $("#detail").querySelectorAll(".tab").forEach(tb => tb.onclick = () => {
+    $("#detail").querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+    tb.classList.add("active"); show(tb.dataset.log);
+  });
+  if (d.nodes.length) show(d.nodes[0]);
+}
+
+loadRuns();
+setInterval(loadRuns, 15000); // refresh the list for in-flight runs
+</script>
+</body>
+</html>
