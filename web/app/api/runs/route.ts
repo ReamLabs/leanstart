@@ -8,8 +8,8 @@ export const fetchCache = "force-no-store";
 // client-side (the dataset is small — tens to low hundreds of runs).
 export async function GET() {
   const rows = await sql`
-    SELECT run_id, started_at, captured_at, status, client, image, devnet,
-           flags, fixes, outcome, source
+    SELECT run_id, started_at, captured_at, status, client, image, clients, devnet,
+           flags, outcome, source
     FROM runs
     ORDER BY run_id DESC
   `;

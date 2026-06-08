@@ -3,10 +3,10 @@
 A public, filterable web app for every Lean Ethereum devnet run produced by
 `leanstart`. Browse runs by **devnet (devnet4/devnet5)**, client, image, status,
 and **fix facets**; open a run to see its topology, finalization chart, outcome
-stats, and full per-node logs; overlay runs on `/compare`.
+stats, and full per-node logs. Clean, DigitalOcean-inspired UI.
 
 ## Stack
-- **Next.js 14** (App Router) — gallery, detail, compare pages + API routes.
+- **Next.js 14** (App Router) — gallery + run-detail pages + API routes.
 - **Neon Postgres** — `runs` / `samples` / `logs` (see `lib/db.ts`).
 - **Recharts** — finalization charts.
 

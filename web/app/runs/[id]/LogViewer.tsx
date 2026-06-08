@@ -14,19 +14,32 @@ export default function LogViewer({ id, nodes }: { id: string; nodes: string[] }
       .then(setBody);
   }, [id, active]);
 
-  if (!nodes.length) return <p className="muted">No per-node logs captured.</p>;
+  if (!nodes.length)
+    return (
+      <div className="cardbody">
+        <span className="faint">No per-node logs captured for this run.</span>
+      </div>
+    );
+
   return (
     <div>
-      <div className="btnrow">
+      <div className="tabs">
         {nodes.map((n) => (
-          <button
+          <div
             key={n}
-            className={`btn ${n === active ? "active" : ""}`}
+            className={`tab ${n === active ? "active" : ""}`}
             onClick={() => setActive(n)}
           >
             {n}
-          </button>
+          </div>
         ))}
+        <span style={{ flex: 1 }} />
+        <a className="dlbtn" href={`/api/runs/${id}/log/${active}?download=1`} download>
+          ↓ {active}.log
+        </a>
+        <a className="dlbtn primary" href={`/api/runs/${id}/logs`} download>
+          ↓ Download all
+        </a>
       </div>
       <pre className="log">{body}</pre>
     </div>

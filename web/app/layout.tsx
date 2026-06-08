@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "leanstart devnets",
-  description: "Every Lean Ethereum devnet run, filterable.",
+  description: "Every Lean Ethereum devnet run, tracked and filterable.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -12,12 +12,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <header className="topbar">
           <a href="/" className="brand">
-            ⬡ leanstart <span className="muted">devnets</span>
+            <span className="logo">⬡</span>
+            leanstart <span className="sub">devnets</span>
           </a>
           <nav>
             <a href="/">Runs</a>
-            <a href="/compare">Compare</a>
           </nav>
+          <span className="spacer" />
+          <span className="meta">Lean Ethereum devnet tracker</span>
         </header>
         <main>{children}</main>
       </body>

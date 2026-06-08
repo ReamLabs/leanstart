@@ -147,6 +147,11 @@ export async function ingestRun(sql: any, id: string, files: RunFiles) {
       captured_at: runJson.captured_at ?? null,
       client: ream?.name ?? null,
       image: ream?.image ?? null,
+      clients: (runJson.clients ?? []).map((c: any) => ({
+        name: c.name,
+        instances: c.instances,
+        image: c.image,
+      })),
       devnet: runJson.devnet ?? spec.devnet,
       invocation: runJson.invocation ?? spec.invocation,
       namespace: runJson.namespace ?? null,
@@ -166,6 +171,11 @@ export async function ingestRun(sql: any, id: string, files: RunFiles) {
       captured_at: null,
       client: c0?.name ?? null,
       image: c0?.image ?? null,
+      clients: spec.clients.map((c: any) => ({
+        name: c.name,
+        instances: c.instances,
+        image: c.image,
+      })),
       devnet: spec.devnet,
       invocation: spec.invocation,
       namespace: null,
@@ -221,17 +231,18 @@ export async function ingestRun(sql: any, id: string, files: RunFiles) {
     mf >= 2000 ? "finalized-2k" : mf >= 200 ? "finalized" : mf > 0 ? "partial" : "no-finality";
 
   await sql`
-    INSERT INTO runs (run_id, started_at, captured_at, status, client, image, devnet,
+    INSERT INTO runs (run_id, started_at, captured_at, status, client, image, clients, devnet,
                       invocation, namespace, context, host_map, flags, genesis, fixes,
                       outcome, notes, source)
     VALUES (${row.run_id}, ${row.started_at}, ${row.captured_at}, ${row.status},
-            ${row.client}, ${row.image}, ${row.devnet}, ${row.invocation}, ${row.namespace},
+            ${row.client}, ${row.image}, ${JSON.stringify(row.clients ?? [])}, ${row.devnet},
+            ${row.invocation}, ${row.namespace},
             ${row.context}, ${JSON.stringify(row.host_map)}, ${JSON.stringify(row.flags)},
             ${JSON.stringify(row.genesis)}, ${JSON.stringify(row.fixes)},
             ${JSON.stringify(row.outcome)}, ${row.notes}, ${row.source})
     ON CONFLICT (run_id) DO UPDATE SET
       started_at=EXCLUDED.started_at, captured_at=EXCLUDED.captured_at, status=EXCLUDED.status,
-      client=EXCLUDED.client, image=EXCLUDED.image, devnet=EXCLUDED.devnet,
+      client=EXCLUDED.client, image=EXCLUDED.image, clients=EXCLUDED.clients, devnet=EXCLUDED.devnet,
       invocation=EXCLUDED.invocation, namespace=EXCLUDED.namespace, context=EXCLUDED.context,
       host_map=EXCLUDED.host_map, flags=EXCLUDED.flags, genesis=EXCLUDED.genesis,
       fixes=EXCLUDED.fixes, outcome=EXCLUDED.outcome, notes=EXCLUDED.notes, source=EXCLUDED.source
