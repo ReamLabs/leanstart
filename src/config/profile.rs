@@ -22,6 +22,10 @@ pub struct Profile {
     pub skip_metrics: Option<bool>,
     pub namespace: Option<String>,
     pub storage_class: Option<String>,
+    /// Base URL of the devnet showcase site (used by `leanstart runs push`).
+    pub showcase_url: Option<String>,
+    /// Bearer token for the showcase ingest API.
+    pub showcase_token: Option<String>,
 }
 
 impl Profile {

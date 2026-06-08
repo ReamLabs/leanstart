@@ -105,6 +105,7 @@ pub fn generate_helm_values(
             entry.is_aggregator,
             committee_count,
             aggregate_subnet_ids.as_deref(),
+            spec.devnet5,
         );
 
         let image = if client_def.arch_aware {

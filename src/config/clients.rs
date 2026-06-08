@@ -29,11 +29,11 @@ pub struct ClientDef {
 pub static CLIENTS: &[ClientDef] = &[
     ClientDef {
         name: "ethlambda",
-        image: "ghcr.io/lambdaclass/ethlambda:devnet4",
+        image: "ghcr.io/lambdaclass/ethlambda:devnet5",
         arch_aware: false,
         seccomp_unconfined: false,
         hash_sig_mode: HashSigMode::None,
-        has_http_port: false,
+        has_http_port: true,
     },
     ClientDef {
         name: "qlean",
@@ -45,7 +45,7 @@ pub static CLIENTS: &[ClientDef] = &[
     },
     ClientDef {
         name: "ream",
-        image: "snaiyer1/ream:latest-devnet5",
+        image: "snaiyer1/ream:devnet5-r2-gd1",
         arch_aware: false,
         seccomp_unconfined: false,
         hash_sig_mode: HashSigMode::None,
@@ -104,8 +104,57 @@ pub fn build_args(
     is_aggregator: bool,
     attestation_committee_count: Option<u32>,
     aggregate_subnet_ids: Option<&str>,
+    devnet5: bool,
 ) -> Vec<String> {
     let mut args = Vec::new();
+
+    // ethlambda has a distinct devnet5 CLI (reads the ream-generated registry:
+    // config.yaml + annotated_validators.yaml + nodes.yaml + per-validator XMSS
+    // keys). Handle it before the devnet4 match below.
+    if client.name == "ethlambda" && devnet5 {
+        args.extend_from_slice(&[
+            "--genesis".into(),
+            "/config/config.yaml".into(),
+            "--validators".into(),
+            "/config/annotated_validators.yaml".into(),
+            "--bootnodes".into(),
+            "/config/nodes.yaml".into(),
+            "--validator-config".into(),
+            "/config/validator-config.yaml".into(),
+            "--hash-sig-keys-dir".into(),
+            "/config/hash-sig-keys".into(),
+            "--gossipsub-port".into(),
+            "9000".into(),
+            "--http-address".into(),
+            "0.0.0.0".into(),
+            "--api-port".into(),
+            "5055".into(),
+            "--metrics-port".into(),
+            "8080".into(),
+            "--node-id".into(),
+            node_id.into(),
+            "--node-key".into(),
+            format!("/config/{node_id}.key"),
+            "--data-dir".into(),
+            "/data".into(),
+        ]);
+        if is_aggregator {
+            args.push("--is-aggregator".into());
+        }
+        if let Some(count) = attestation_committee_count {
+            args.push("--attestation-committee-count".into());
+            args.push(count.to_string());
+        }
+        if is_aggregator {
+            if let Some(ids) = aggregate_subnet_ids {
+                if ids.contains(',') {
+                    args.push("--aggregate-subnet-ids".into());
+                    args.push(ids.into());
+                }
+            }
+        }
+        return args;
+    }
 
     match client.name {
         "ethlambda" => {

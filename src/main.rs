@@ -4,6 +4,7 @@ mod genesis;
 mod k8s;
 mod keys;
 mod logging;
+mod run_record;
 
 use std::env;
 
@@ -22,6 +23,8 @@ enum Commands {
     Run(cli::run::RunArgs),
     /// Generate validator config, keys, genesis, and Helm values (advanced).
     Generate(cli::generate::GenerateArgs),
+    /// Capture/publish run records: leanstart runs snapshot | push.
+    Runs(cli::runs::RunsArgs),
     /// Deploy a generated devnet to Kubernetes.
     Deploy(cli::deploy::DeployArgs),
     /// Show pod status in the devnet namespace.
@@ -30,7 +33,8 @@ enum Commands {
     Destroy(cli::destroy::DestroyArgs),
 }
 
-const SUBCOMMANDS: &[&str] = &["run", "generate", "deploy", "status", "destroy", "help"];
+const SUBCOMMANDS: &[&str] =
+    &["run", "generate", "runs", "deploy", "status", "destroy", "help"];
 
 fn main() -> anyhow::Result<()> {
     // If the first arg isn't a known subcommand, treat it as `run <args...>`
@@ -50,6 +54,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Run(args) => cli::run::run(args),
         Commands::Generate(args) => cli::generate::run(args),
+        Commands::Runs(args) => cli::runs::run(args),
         Commands::Deploy(args) => cli::deploy::run(args),
         Commands::Status(args) => cli::status::run(args),
         Commands::Destroy(args) => cli::destroy::run(args),

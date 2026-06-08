@@ -108,6 +108,15 @@ pub struct RunArgs {
     /// Use host networking for pods (bypass flannel/CNI; 1 pod per node).
     #[arg(long)]
     pub host_network: bool,
+
+    /// Container imagePullPolicy (Always|IfNotPresent|Never). Use IfNotPresent
+    /// when running a locally-imported image (e.g. a patched ream).
+    #[arg(long, default_value = "Always")]
+    pub image_pull_policy: String,
+
+    /// Skip writing the per-run `run.json` metadata record into the run dir.
+    #[arg(long)]
+    pub skip_run_record: bool,
 }
 
 pub fn run(mut args: RunArgs) -> Result<()> {
@@ -191,10 +200,23 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         );
     }
 
-    // devnet5 keygen (ream generate_validator_registry) only emits `ream_N`
-    // node ids, so the devnet must be ream-only.
-    if args.devnet5 && clients.iter().any(|c| c.name != "ream") {
-        bail!("--devnet5 currently supports ream-only devnets");
+    // devnet5 keygen (ream generate_validator_registry) emits `ream_N` node ids
+    // and ream-format keys. ream consumes them natively; ethlambda consumes the
+    // same artifacts (we remap the annotated_validators.yaml node-id prefix to the
+    // client's name). Other clients aren't wired for devnet5 yet, and mixing
+    // clients would need per-client remapping, so keep it single-client.
+    if args.devnet5 {
+        let names: std::collections::HashSet<_> = clients.iter().map(|c| c.name.as_str()).collect();
+        let unsupported: Vec<_> = names
+            .iter()
+            .filter(|n| **n != "ream" && **n != "ethlambda")
+            .collect();
+        if !unsupported.is_empty() {
+            bail!("--devnet5 currently supports ream or ethlambda only (got {unsupported:?})");
+        }
+        if names.len() > 1 {
+            bail!("--devnet5 currently supports single-client devnets (got {names:?})");
+        }
     }
 
     let total_instances: u32 = clients.iter().map(|c| c.instances).sum::<u32>() * args.subnets;
@@ -331,6 +353,7 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         &args.output_dir,
         !args.skip_metrics,
         args.host_network,
+        &args.image_pull_policy,
     )?;
 
     // Derive expected pod names from the validator config.
@@ -408,6 +431,22 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
     // once after the sentinel is dropped.
     println!("==> Streaming logs to {}/...", run_dir.display());
     start_log_streaming(&context, &args.namespace, &pod_names, run_dir)?;
+
+    // Write the per-run metadata record (topology, flags, images, genesis, fix
+    // facets) for the devnet showcase. Best-effort: never fail the run over it.
+    if !args.skip_run_record {
+        if let Err(e) = crate::run_record::write_run_record(
+            run_dir,
+            &spec,
+            &vc,
+            &args,
+            &context,
+            &pod_names,
+            &genesis_dir,
+        ) {
+            eprintln!("  warning: failed to write run.json: {e:#}");
+        }
+    }
 
     if !args.skip_metrics {
         provision_grafana_dashboard(&context)?;
@@ -1000,13 +1039,21 @@ fn copy_pod_payload(
         if devnet5 {
             // devnet5 (ream generate_validator_registry): validator_N_{attestation,
             // proposal}_sk.ssz, no pubkey files, no manifest (annotated_validators
-            // is the registry ream reads).
+            // is the registry ream reads). ethlambda classifies keys by filename
+            // substring attester/proposer, so copy them under the renamed names it
+            // expects (matching the annotated_validators.yaml privkey_file remap).
+            let ethlambda = entry_name.starts_with("ethlambda");
             for idx in start..end {
-                for role in ["attestation", "proposal"] {
+                for (role, dest_role) in [("attestation", "attester"), ("proposal", "proposer")] {
                     let fname = format!("validator_{idx}_{role}_sk.ssz");
                     let src = hash_sig_dir.join(&fname);
                     if src.exists() {
-                        cp(&src, &format!("/config/hash-sig-keys/{fname}"))?;
+                        let dest = if ethlambda {
+                            format!("/config/hash-sig-keys/validator_{idx}_{dest_role}_sk.ssz")
+                        } else {
+                            format!("/config/hash-sig-keys/{fname}")
+                        };
+                        cp(&src, &dest)?;
                     }
                 }
             }
@@ -1052,6 +1099,47 @@ fn generate_devnet5_genesis(
     );
     run_validator_registry(ream.image, num_nodes, spec.validators_per_pod, genesis_dir)?;
     set_genesis_time(genesis_dir, genesis_offset)?;
+
+    // The registry hardcodes `ream_N` node-id keys in annotated_validators.yaml.
+    // For a non-ream devnet5 client (e.g. ethlambda) the pod node-ids are
+    // `<client>_N`, and the client looks itself up by node-id — so remap the
+    // prefix. Single-client is enforced by the guard, so a blanket replace is safe.
+    let client_name = vc
+        .validators
+        .first()
+        .map(|v| v.client.as_str())
+        .unwrap_or("ream");
+    if client_name != "ream" {
+        let annotated = genesis_dir.join("annotated_validators.yaml");
+        if let Ok(contents) = fs::read_to_string(&annotated) {
+            let mut remapped = contents.replace("ream_", &format!("{client_name}_"));
+            if client_name == "ethlambda" {
+                // ethlambda's annotated-validators ValidatorPubkey parser wants raw
+                // hex (no `0x`), and classifies each key by `privkey_file` name
+                // containing `attester`/`proposer` (ream emits attestation/proposal).
+                remapped = remapped
+                    .replace("pubkey_hex: 0x", "pubkey_hex: ")
+                    .replace("_attestation_sk.ssz", "_attester_sk.ssz")
+                    .replace("_proposal_sk.ssz", "_proposer_sk.ssz");
+            }
+            fs::write(&annotated, remapped)?;
+            println!("  remapped annotated_validators.yaml node-ids ream_N -> {client_name}_N");
+        }
+    }
+
+    // ethlambda's config.yaml deserializer expects GENESIS_VALIDATORS fields named
+    // `attestation_pubkey`/`proposal_pubkey`; ream's registry emits the longer
+    // `attestation_public_key`/`proposal_public_key`. Rename for ethlambda.
+    if client_name == "ethlambda" {
+        let config = genesis_dir.join("config.yaml");
+        if let Ok(contents) = fs::read_to_string(&config) {
+            let fixed = contents
+                .replace("attestation_public_key", "attestation_pubkey")
+                .replace("proposal_public_key", "proposal_pubkey");
+            fs::write(&config, fixed)?;
+            println!("  rewrote config.yaml GENESIS_VALIDATORS field names for ethlambda");
+        }
+    }
 
     println!("==> Generating nodes.yaml (ENRs)...");
     regen_devnet5_nodes(vc, genesis_dir, genesis_offset)?;
@@ -1211,6 +1299,7 @@ fn helm_install(
     output_dir: &PathBuf,
     metrics_enabled: bool,
     host_network: bool,
+    image_pull_policy: &str,
 ) -> Result<()> {
     let values_path = output_dir.join("helm-values.yaml");
 
@@ -1218,6 +1307,7 @@ fn helm_install(
     // aren't installed so the deploy doesn't fail on a missing CRD.
     let prometheus_set = format!("prometheus.enabled={metrics_enabled}");
     let host_net_set = format!("hostNetwork={host_network}");
+    let image_pull_set = format!("imagePullPolicy={image_pull_policy}");
     let status = Command::new("helm")
         .args([
             "install",
@@ -1231,6 +1321,8 @@ fn helm_install(
             &prometheus_set,
             "--set",
             &host_net_set,
+            "--set",
+            &image_pull_set,
             "-n",
             namespace,
             "--kube-context",
