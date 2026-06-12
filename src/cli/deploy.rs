@@ -27,7 +27,7 @@ pub fn run(args: DeployArgs) -> Result<()> {
     let values_path = args.output_dir.join("helm-values.yaml");
     if !values_path.exists() {
         bail!(
-            "helm-values.yaml not found at {}. Run 'lean-devnet generate' first.",
+            "helm-values.yaml not found at {}. Run 'leanstart generate' first.",
             values_path.display()
         );
     }
@@ -95,7 +95,7 @@ pub fn run(args: DeployArgs) -> Result<()> {
         println!("\n✓ Dry run complete.");
     } else {
         println!("\n✓ Deployed to namespace '{}'.", args.namespace);
-        println!("  Run 'lean-devnet status' to check pod health.");
+        println!("  Run 'leanstart status' to check pod health.");
     }
     Ok(())
 }
