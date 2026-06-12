@@ -218,7 +218,8 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
 
     if args.config_only {
         println!("==> Generating Helm values...");
-        let helm_values = generate_helm_values(&spec, &vc)?;
+        let mut helm_values = generate_helm_values(&spec, &vc)?;
+        helm_values.prometheus.enabled = !args.skip_metrics;
         write_helm_values(&helm_values, &args.output_dir)?;
         generate_pod_secrets(&vc, &spec.namespace, &args.output_dir)?;
         println!("\nConfig generated in {}", args.output_dir.display());
@@ -246,7 +247,8 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
 
     // Step 5: Generate Helm values
     println!("==> Generating Helm values...");
-    let helm_values = generate_helm_values(&spec, &vc)?;
+    let mut helm_values = generate_helm_values(&spec, &vc)?;
+    helm_values.prometheus.enabled = !args.skip_metrics;
     write_helm_values(&helm_values, &args.output_dir)?;
     generate_pod_secrets(&vc, &spec.namespace, &args.output_dir)?;
 

@@ -175,9 +175,9 @@ pub fn build_args(
         "zeam" => {
             args.extend_from_slice(&[
                 "node".into(),
-                "--custom_genesis".into(),
+                "--custom-genesis".into(),
                 "/config".into(),
-                "--validator_config".into(),
+                "--validator-config".into(),
                 "/config".into(),
                 "--data-dir".into(),
                 "/data".into(),
