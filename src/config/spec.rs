@@ -77,23 +77,54 @@ impl DevnetSpec {
     }
 }
 
+impl ClientAllocation {
+    /// Resolve this allocation's `@host` pin for a given subnet. A single host
+    /// (or `None`) applies to every subnet; a comma-separated list must have one
+    /// entry per subnet, and subnet `subnet_idx` lands on that entry. This is what
+    /// lets `ream:1@big0,big1,big2,big3 --subnets 4` put each subnet's replica on
+    /// a distinct host (e.g. one aggregator per big node).
+    pub fn host_for_subnet(
+        &self,
+        subnet_idx: u32,
+        subnets: u32,
+    ) -> anyhow::Result<Option<String>> {
+        let Some(raw) = &self.host else {
+            return Ok(None);
+        };
+        let parts: Vec<&str> = raw.split(',').collect();
+        match parts.len() {
+            1 => Ok(Some(parts[0].to_string())),
+            n if n as u32 == subnets => Ok(Some(parts[subnet_idx as usize].to_string())),
+            n => anyhow::bail!(
+                "@host list for '{}' has {n} entries; must be 1 or == subnets ({subnets})",
+                self.name
+            ),
+        }
+    }
+}
+
 /// Parse a client spec string like "ream", "zeam:2", "grandine:5", or with a
 /// host pin: "ream:3@nbg1", "zeam@nbg2".
 ///
 /// Grammar: `<name>[:<count>][@<host>]`. The `@host` pins the client's pods to
 /// the node labelled `leanstart.io/host=<host>`; omitting it auto-spreads.
 pub fn parse_client_spec(spec: &str) -> anyhow::Result<ClientAllocation> {
-    // Peel off an optional "@host" suffix first.
+    // Peel off an optional "@host" suffix first. The host may be a single label
+    // (`@nbg1`, shared across all subnets) or a comma-separated list whose length
+    // equals the subnet count (`@big0,big1,big2,big3`), placing each subnet's
+    // replica of this allocation on a distinct host. Validate every token.
     let (left, host) = match spec.split_once('@') {
         Some((l, h)) => {
             if h.is_empty() {
                 anyhow::bail!("Empty host in client spec '{spec}'. Use 'name:count@host'");
             }
-            if !is_dns_label(h) {
-                anyhow::bail!(
-                    "Invalid host '{h}' in '{spec}'. Hosts must be lowercase \
-                     alphanumeric or '-' (a Kubernetes label value)"
-                );
+            for token in h.split(',') {
+                if !is_dns_label(token) {
+                    anyhow::bail!(
+                        "Invalid host '{token}' in '{spec}'. Hosts must be lowercase \
+                         alphanumeric or '-' (a Kubernetes label value)"
+                    );
+                }
             }
             (l, Some(h.to_string()))
         }

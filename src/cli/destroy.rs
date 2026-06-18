@@ -19,6 +19,14 @@ pub struct DestroyArgs {
 }
 
 pub fn run(args: DestroyArgs) -> Result<()> {
+    // Step 0: Kill any per-pod `kubectl logs -f` streamers this namespace's runs
+    // spawned (tagged `leanstart-logstream-<ns>`), so they don't linger and pile
+    // up across redeploys and saturate the host with stale kubectl processes.
+    println!("==> Stopping log streamers...");
+    let _ = Command::new("pkill")
+        .args(["-f", &format!("leanstart-logstream-{}", args.namespace)])
+        .status();
+
     // Step 1: Scale down all StatefulSets
     println!("==> Scaling down all pods...");
     let _ = Command::new("kubectl")

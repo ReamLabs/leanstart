@@ -15,7 +15,7 @@ use crate::genesis::runner::{
     run_validator_registry, set_genesis_time, write_config_yaml,
 };
 use crate::k8s::values::{generate_helm_values, generate_pod_secrets, write_helm_values};
-use crate::keys::keygen::{generate_hash_sig_keys, write_node_keys};
+use crate::keys::keygen::{copy_keys_from_pool, generate_hash_sig_keys, write_node_keys};
 
 /// Run a devnet with the specified clients.
 ///
@@ -117,6 +117,14 @@ pub struct RunArgs {
     /// Skip writing the per-run `run.json` metadata record into the run dir.
     #[arg(long)]
     pub skip_run_record: bool,
+
+    /// Reuse a pre-generated hash-sig key pool (from `leanstart keygen`) instead
+    /// of running the slow hash-sig-cli on every deploy. The pool's `active_epoch`
+    /// and validator count must cover this deploy (validated against the pool
+    /// manifest). devnet4 only. Keys are deterministic, so a pool built on a fast
+    /// laptop is byte-identical to a server-built one.
+    #[arg(long)]
+    pub key_pool: Option<PathBuf>,
 }
 
 pub fn run(mut args: RunArgs) -> Result<()> {
@@ -200,22 +208,20 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
         );
     }
 
-    // devnet5 keygen (ream generate_validator_registry) emits `ream_N` node ids
-    // and ream-format keys. ream consumes them natively; ethlambda consumes the
-    // same artifacts (we remap the annotated_validators.yaml node-id prefix to the
-    // client's name). Other clients aren't wired for devnet5 yet, and mixing
-    // clients would need per-client remapping, so keep it single-client.
+    // devnet5 keygen (ream generate_validator_registry) emits `ream_N` node ids and
+    // ream-format keys/config. Multi-client works by materializing per-pod, per-client
+    // config.yaml + annotated_validators.yaml (node-id + field/key-name conventions)
+    // at injection time (see copy_pod_payload). Only clients whose devnet5 CLI + format
+    // are wired are allowed.
     if args.devnet5 {
+        const DEVNET5_CLIENTS: &[&str] = &["ream", "ethlambda", "zeam", "lantern"];
         let names: std::collections::HashSet<_> = clients.iter().map(|c| c.name.as_str()).collect();
         let unsupported: Vec<_> = names
             .iter()
-            .filter(|n| **n != "ream" && **n != "ethlambda")
+            .filter(|n| !DEVNET5_CLIENTS.contains(n))
             .collect();
         if !unsupported.is_empty() {
-            bail!("--devnet5 currently supports ream or ethlambda only (got {unsupported:?})");
-        }
-        if names.len() > 1 {
-            bail!("--devnet5 currently supports single-client devnets (got {names:?})");
+            bail!("--devnet5 supports {DEVNET5_CLIENTS:?} only (got {unsupported:?})");
         }
     }
 
@@ -288,10 +294,23 @@ fn run_inner(args: RunArgs, run_dir: &Path) -> Result<()> {
     if spec.devnet5 {
         generate_devnet5_genesis(&spec, &vc, &genesis_dir, args.genesis_offset)?;
     } else {
-        println!(
-            "==> Generating hash-sig keys for {total_validators_for_keys} validators..."
-        );
-        generate_hash_sig_keys(total_validators_for_keys, args.active_epoch, &genesis_dir)?;
+        if let Some(pool) = &args.key_pool {
+            println!(
+                "==> Reusing hash-sig key pool {} for {total_validators_for_keys} validators...",
+                pool.display()
+            );
+            copy_keys_from_pool(
+                pool,
+                total_validators_for_keys,
+                args.active_epoch,
+                &genesis_dir,
+            )?;
+        } else {
+            println!(
+                "==> Generating hash-sig keys for {total_validators_for_keys} validators..."
+            );
+            generate_hash_sig_keys(total_validators_for_keys, args.active_epoch, &genesis_dir)?;
+        }
 
         println!("==> Writing config.yaml...");
         write_config_yaml(&vc, args.genesis_offset, &genesis_dir)?;
@@ -937,6 +956,10 @@ fn inject_peers_gated(
         ]
     };
     let ranges = pod_validator_indices(vc);
+    // Registry node index k -> actual pod node-id (`ream_0`, `zeam_0`, ...). The base
+    // registry keys annotated_validators.yaml as `ream_k`; copy_pod_payload remaps each
+    // to node_ids[k] so heterogeneous clients find their own entry by node-id.
+    let node_ids: Vec<String> = vc.validators.iter().map(|v| v.name.clone()).collect();
 
     let mut handles = Vec::new();
     for (pod_name, entry_name) in pods {
@@ -950,10 +973,11 @@ fn inject_peers_gated(
         let genesis_dir = genesis_dir.clone();
         let pod_name = pod_name.clone();
         let entry_name = entry_name.clone();
+        let node_ids = node_ids.clone();
         handles.push(std::thread::spawn(move || {
             copy_pod_payload(
                 &context, &namespace, &genesis_dir, &pod_name, &entry_name, start,
-                end, genesis_files, devnet5,
+                end, genesis_files, devnet5, &node_ids,
             )
         }));
     }
@@ -982,6 +1006,72 @@ fn inject_peers_gated(
     Ok(())
 }
 
+/// Per-client devnet5 registry conventions. The base registry (ream's
+/// `generate_validator_registry`) emits `0x`-prefixed pubkeys and
+/// `validator_N_{attestation,proposal}_sk.ssz` key files with `*_public_key`
+/// GENESIS_VALIDATORS fields. Clients that diverge get rewritten per-pod.
+struct Devnet5Format {
+    /// ethlambda's ValidatorPubkey parser wants raw hex (no `0x`).
+    strip_0x: bool,
+    /// Key-filename role tokens (ream: attestation/proposal; ethlambda: attester/proposer).
+    attestation: &'static str,
+    proposal: &'static str,
+    /// ethlambda's config.yaml wants `*_pubkey` instead of `*_public_key`.
+    rename_config_fields: bool,
+}
+
+fn devnet5_format(client: &str) -> Devnet5Format {
+    match client {
+        "ethlambda" => Devnet5Format {
+            strip_0x: true,
+            attestation: "attester",
+            proposal: "proposer",
+            rename_config_fields: true,
+        },
+        // ream (native) plus zeam/lantern, which consume the ream-format registry as-is.
+        _ => Devnet5Format {
+            strip_0x: false,
+            attestation: "attestation",
+            proposal: "proposal",
+            rename_config_fields: false,
+        },
+    }
+}
+
+/// This pod's config.yaml from the base ream registry config, formatted for `client`.
+fn devnet5_pod_config(base: &str, fmt: &Devnet5Format) -> String {
+    if fmt.rename_config_fields {
+        base.replace("attestation_public_key", "attestation_pubkey")
+            .replace("proposal_public_key", "proposal_pubkey")
+    } else {
+        base.to_string()
+    }
+}
+
+/// This pod's annotated_validators.yaml: remap base `ream_<k>:` node-id keys to each
+/// node's actual node-id (`node_ids[k]`), then apply `client`'s pubkey/key-filename
+/// conventions. Each pod reads its own node-id entry to locate its keys.
+fn devnet5_pod_annotated(base: &str, node_ids: &[String], fmt: &Devnet5Format) -> String {
+    let mut out = String::new();
+    for line in base.lines() {
+        // Node-id key lines are `ream_<k>:` at column 0.
+        if let Some(num) = line.strip_suffix(':').and_then(|r| r.strip_prefix("ream_")) {
+            if let Some(id) = num.parse::<usize>().ok().and_then(|k| node_ids.get(k)) {
+                out.push_str(id);
+                out.push_str(":\n");
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if fmt.strip_0x {
+        out = out.replace("pubkey_hex: 0x", "pubkey_hex: ");
+    }
+    out.replace("_attestation_sk.ssz", &format!("_{}_sk.ssz", fmt.attestation))
+        .replace("_proposal_sk.ssz", &format!("_{}_sk.ssz", fmt.proposal))
+}
+
 /// Copy one pod's genesis files + node key + its own hash-sig keys into the
 /// waiting `resolve-peers` init container. Does NOT drop the sentinel — the
 /// caller releases all pods together once every copy has finished. Safe to run
@@ -997,6 +1087,7 @@ fn copy_pod_payload(
     end: u32,
     genesis_files: &[&str],
     devnet5: bool,
+    node_ids: &[String],
 ) -> Result<()> {
     const INIT_C: &str = "resolve-peers";
     let cp = |src: &Path, dest: &str| -> Result<()> {
@@ -1015,9 +1106,33 @@ fn copy_pod_payload(
     };
 
     for f in genesis_files {
+        // devnet5 config.yaml + annotated_validators.yaml are materialized per-pod
+        // (client-specific format) below, not copied verbatim from the base registry.
+        if devnet5 && (*f == "config.yaml" || *f == "annotated_validators.yaml") {
+            continue;
+        }
         let src = genesis_dir.join(f);
         if src.exists() {
             cp(&src, &format!("/config/{f}"))?;
+        }
+    }
+
+    // devnet5: write this pod's client-formatted config.yaml + annotated_validators.yaml
+    // from the shared ream-format base registry, then copy them in.
+    if devnet5 {
+        let client = entry_name.split('_').next().unwrap_or("ream");
+        let fmt = devnet5_format(client);
+        if let Ok(base) = fs::read_to_string(genesis_dir.join("config.yaml")) {
+            let tmp = genesis_dir.join(format!(".config-{entry_name}.yaml"));
+            fs::write(&tmp, devnet5_pod_config(&base, &fmt))?;
+            cp(&tmp, "/config/config.yaml")?;
+            let _ = fs::remove_file(&tmp);
+        }
+        if let Ok(base) = fs::read_to_string(genesis_dir.join("annotated_validators.yaml")) {
+            let tmp = genesis_dir.join(format!(".annotated-{entry_name}.yaml"));
+            fs::write(&tmp, devnet5_pod_annotated(&base, node_ids, &fmt))?;
+            cp(&tmp, "/config/annotated_validators.yaml")?;
+            let _ = fs::remove_file(&tmp);
         }
     }
 
@@ -1100,46 +1215,11 @@ fn generate_devnet5_genesis(
     run_validator_registry(ream.image, num_nodes, spec.validators_per_pod, genesis_dir)?;
     set_genesis_time(genesis_dir, genesis_offset)?;
 
-    // The registry hardcodes `ream_N` node-id keys in annotated_validators.yaml.
-    // For a non-ream devnet5 client (e.g. ethlambda) the pod node-ids are
-    // `<client>_N`, and the client looks itself up by node-id — so remap the
-    // prefix. Single-client is enforced by the guard, so a blanket replace is safe.
-    let client_name = vc
-        .validators
-        .first()
-        .map(|v| v.client.as_str())
-        .unwrap_or("ream");
-    if client_name != "ream" {
-        let annotated = genesis_dir.join("annotated_validators.yaml");
-        if let Ok(contents) = fs::read_to_string(&annotated) {
-            let mut remapped = contents.replace("ream_", &format!("{client_name}_"));
-            if client_name == "ethlambda" {
-                // ethlambda's annotated-validators ValidatorPubkey parser wants raw
-                // hex (no `0x`), and classifies each key by `privkey_file` name
-                // containing `attester`/`proposer` (ream emits attestation/proposal).
-                remapped = remapped
-                    .replace("pubkey_hex: 0x", "pubkey_hex: ")
-                    .replace("_attestation_sk.ssz", "_attester_sk.ssz")
-                    .replace("_proposal_sk.ssz", "_proposer_sk.ssz");
-            }
-            fs::write(&annotated, remapped)?;
-            println!("  remapped annotated_validators.yaml node-ids ream_N -> {client_name}_N");
-        }
-    }
-
-    // ethlambda's config.yaml deserializer expects GENESIS_VALIDATORS fields named
-    // `attestation_pubkey`/`proposal_pubkey`; ream's registry emits the longer
-    // `attestation_public_key`/`proposal_public_key`. Rename for ethlambda.
-    if client_name == "ethlambda" {
-        let config = genesis_dir.join("config.yaml");
-        if let Ok(contents) = fs::read_to_string(&config) {
-            let fixed = contents
-                .replace("attestation_public_key", "attestation_pubkey")
-                .replace("proposal_public_key", "proposal_pubkey");
-            fs::write(&config, fixed)?;
-            println!("  rewrote config.yaml GENESIS_VALIDATORS field names for ethlambda");
-        }
-    }
+    // The base registry stays in ream format (node-ids `ream_N`, `config.yaml`
+    // GENESIS_VALIDATORS with `*_public_key` + `0x` hex). Per-pod, per-client
+    // formatting — node-id remap to the pod's actual `<client>_N`, ethlambda field
+    // renames, key-filename conventions — happens at injection (copy_pod_payload),
+    // so heterogeneous clients can share one registry.
 
     println!("==> Generating nodes.yaml (ENRs)...");
     regen_devnet5_nodes(vc, genesis_dir, genesis_offset)?;
@@ -1673,21 +1753,34 @@ fn start_log_streaming(
 ) -> Result<()> {
     fs::create_dir_all(logs_dir)?;
 
+    // Kill any log streamers left over from a previous run of this namespace so
+    // they don't accumulate across redeploys. Each streamer carries a
+    // `leanstart-logstream-<ns>` marker in its command line (see below). Without
+    // this, every `run` orphaned one `kubectl logs -f` shell per pod, and dozens
+    // of redeploys could saturate the host's CPU with stale `kubectl` processes.
+    let marker = format!("leanstart-logstream-{namespace}");
+    let _ = Command::new("pkill").args(["-f", &marker]).status();
+
     for (pod_name, entry_name) in pods {
         let k8s_name = entry_name.replace('_', "-");
         let log_path = logs_dir.join(format!("{entry_name}.log"));
 
         let log_file = fs::File::create(&log_path)?;
 
-        // Wrap `kubectl logs -f` in a retry loop so the stream reconnects when
-        // a container restarts (e.g. crash-loops, manual restarts). Stream is
-        // appended to the same file across restarts. The shell process becomes
-        // an orphan when leanstart exits — that's intentional.
+        // Stream `kubectl logs -f`, reconnecting across container restarts
+        // (crash-loops, manual restarts) — output is appended to the same file.
+        // The leading `: <marker>` is a shell no-op whose only purpose is to put
+        // the marker in this process's command line so a later `run`/`destroy`
+        // can pkill it. The loop self-terminates once the pod no longer exists
+        // (e.g. after `destroy`), so streamers never outlive their devnet.
         let cmd = format!(
-            "while true; do \
+            ": {marker}; \
+             while true; do \
                kubectl --context {ctx} logs -f {pod} -n {ns} -c {k8s} 2>/dev/null; \
+               kubectl --context {ctx} get pod {pod} -n {ns} >/dev/null 2>&1 || break; \
                sleep 1; \
              done",
+            marker = marker,
             ctx = context,
             pod = pod_name,
             ns = namespace,

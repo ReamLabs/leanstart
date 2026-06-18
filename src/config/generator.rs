@@ -127,7 +127,7 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
                 let entry = ValidatorEntry {
                     name,
                     client: client_name.clone(),
-                    host: client.host.clone(),
+                    host: client.host_for_subnet(subnet_idx, spec.subnets)?,
                     privkey,
                     enr_fields: EnrFields {
                         ip: "0.0.0.0".to_string(),
@@ -149,6 +149,32 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
                 first_pod_in_subnet = false;
             }
         }
+    }
+
+    // Interleave the registry so that registry position `i` satisfies
+    // `i % subnets == subnet_idx`. ream (and leanSpec) assign a validator's
+    // attestation committee/subnet as `validator_index % num_committees`, where
+    // the index is the position in the registry (annotated_validators / genesis,
+    // both built from this vec in order — see append_genesis_validators and
+    // pod_validator_indices). Built subnet-major, the per-subnet aggregators (the
+    // first pod of each subnet, at positions 0, P, 2P, ... where P = pods/subnet)
+    // collapse onto committees `{0, P, 2P, ...} % subnets` — e.g. 6 pods/subnet,
+    // 4 subnets => committees 0,2,0,2, leaving committees 1 and 3 with no
+    // aggregator so most votes can't be aggregated and justification stalls.
+    // Interleaving makes leanstart-subnet S == ream-committee S: each subnet's 6
+    // pods all land in committee S and its aggregator (now at position S) is in
+    // committee S. Keys stay aligned because genesis pubkeys and injected private
+    // keys both follow this same (reordered) vec order.
+    if multi_subnet {
+        let n = validators.len();
+        let per_subnet = n / spec.subnets as usize;
+        let mut interleaved = Vec::with_capacity(n);
+        for pod_pos in 0..per_subnet {
+            for s in 0..spec.subnets as usize {
+                interleaved.push(validators[s * per_subnet + pod_pos].clone());
+            }
+        }
+        validators = interleaved;
     }
 
     let committee_count = if multi_subnet || spec.attestation_committee_count.is_some() {

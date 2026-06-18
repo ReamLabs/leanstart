@@ -23,6 +23,8 @@ enum Commands {
     Run(cli::run::RunArgs),
     /// Generate validator config, keys, genesis, and Helm values (advanced).
     Generate(cli::generate::GenerateArgs),
+    /// Pre-generate a reusable hash-sig key pool: leanstart keygen --count 100.
+    Keygen(cli::keygen::KeygenArgs),
     /// Capture/publish run records: leanstart runs snapshot | push.
     Runs(cli::runs::RunsArgs),
     /// Deploy a generated devnet to Kubernetes.
@@ -34,7 +36,7 @@ enum Commands {
 }
 
 const SUBCOMMANDS: &[&str] =
-    &["run", "generate", "runs", "deploy", "status", "destroy", "help"];
+    &["run", "generate", "keygen", "runs", "deploy", "status", "destroy", "help"];
 
 fn main() -> anyhow::Result<()> {
     // If the first arg isn't a known subcommand, treat it as `run <args...>`
@@ -54,6 +56,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Run(args) => cli::run::run(args),
         Commands::Generate(args) => cli::generate::run(args),
+        Commands::Keygen(args) => cli::keygen::run(args),
         Commands::Runs(args) => cli::runs::run(args),
         Commands::Deploy(args) => cli::deploy::run(args),
         Commands::Status(args) => cli::status::run(args),

@@ -24,6 +24,17 @@ pub fn write_config_yaml(
     let total_validators: u32 = vc.validators.iter().map(|v| v.count).sum();
     let committee_count = vc.config.attestation_committee_count.unwrap_or(1);
 
+    // SECONDS_PER_SLOT is read by ream's LeanNetworkSpec (UPPERCASE serde, default
+    // 4). ream's post-quantum committee aggregation takes ~0.8-1.7s per aggregate,
+    // which does not fit a 4s slot's 800ms interval (interval-2 aggregate must land
+    // before the interval-3 safe_target tick). A longer slot gives the prove time
+    // to land so safe_target stays consistent across nodes and 2/3 converges.
+    // Override per-deploy with LEANSTART_SECONDS_PER_SLOT.
+    let seconds_per_slot: u64 = std::env::var("LEANSTART_SECONDS_PER_SLOT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+
     let config_path = output_dir.join("config.yaml");
     let content = format!(
         "# Genesis Settings\n\
@@ -31,6 +42,7 @@ pub fn write_config_yaml(
          \n\
          # Chain Settings\n\
          ATTESTATION_COMMITTEE_COUNT: {committee_count}\n\
+         SECONDS_PER_SLOT: {seconds_per_slot}\n\
          \n\
          # Key Settings\n\
          ACTIVE_EPOCH: {}\n\

@@ -1,0 +1,237 @@
+Console
+Search…
+⌘ K
+
+4
+Activities
+View all 
+Project invitation accepted
+2 minutes ago
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-10
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-8
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-7
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-9
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-4
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-3
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-1
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-5
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-2
+
+K0404870826
+Important status messages
+Outage:
+2
+Other:
+2
+Last updated:
+6 days ago
+Object Storage in location hel1 degraded
+Created:
+2026-06-04 10:30 GMT-6
+Last updated:
+6 days ago
+Details
+Object Storage in location fsn1 degraded
+Created:
+2026-06-08 02:59 GMT-6
+Last updated:
+6 days ago
+Details
+High traffic of Object Storage may lead to timeouts
+Created:
+2026-01-15 08:39 GMT-7
+Last updated:
+28 days ago
+Details
+Limited availability of cloud instances
+Created:
+2026-04-28 00:00 GMT-6
+Last updated:
+29 days ago
+Details
+
+Dismiss all
+
+Add Server
+
+ubuntu-16gb-nbg1-1
+CX43 | x86 | 160 GB | eu-central
+78.47.20.21
+10.0.0.6
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-6
+CX43 | x86 | 160 GB | eu-central
+157.90.118.234
+10.0.0.7
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-2
+CX43 | x86 | 160 GB | eu-central
+5.75.182.36
+10.0.0.8
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-3
+CX43 | x86 | 160 GB | eu-central
+46.224.56.116
+10.0.0.9
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-4
+CX43 | x86 | 160 GB | eu-central
+116.203.51.237
+10.0.0.10
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-7
+CX43 | x86 | 160 GB | eu-central
+157.90.112.15
+10.0.0.11
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-5
+CX43 | x86 | 160 GB | eu-central
+78.47.124.250
+10.0.0.12
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-8
+CX43 | x86 | 160 GB | eu-central
+157.90.118.253
+10.0.0.13
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-9
+CX43 | x86 | 160 GB | eu-central
+157.90.118.238
+10.0.0.14
+Nuremberg
+8 minutes ago
+ubuntu-16gb-nbg1-10
+CX43 | x86 | 160 GB | eu-central
+157.90.127.74
+10.0.0.15
+Nuremberg
+8 minutes ago
+Next
+Legal NoticeData PrivacySystem PoliciesTerms and Conditions
+
+Console
+Search…
+⌘ K
+
+14
+Activities
+View all 
+Project invitation accepted
+2 minutes ago
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-10
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-8
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-7
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-9
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-4
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-3
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-1
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-5
+Server started
+4 minutes ago
+ubuntu-16gb-nbg1-2
+
+K0404870826
+Important status messages
+Outage:
+2
+Other:
+2
+Last updated:
+6 days ago
+Object Storage in location hel1 degraded
+Created:
+2026-06-04 10:30 GMT-6
+Last updated:
+6 days ago
+Details
+Object Storage in location fsn1 degraded
+Created:
+2026-06-08 02:59 GMT-6
+Last updated:
+6 days ago
+Details
+High traffic of Object Storage may lead to timeouts
+Created:
+2026-01-15 08:39 GMT-7
+Last updated:
+28 days ago
+Details
+Limited availability of cloud instances
+Created:
+2026-04-28 00:00 GMT-6
+Last updated:
+29 days ago
+Details
+
+Dismiss all
+
+Add Server
+
+ubuntu-32gb-nbg1-4
+CX53 | x86 | 320 GB | eu-central
+49.13.170.143
+10.0.0.2
+Nuremberg
+13 minutes ago
+ubuntu-32gb-nbg1-1
+CX53 | x86 | 320 GB | eu-central
+78.47.230.138
+10.0.0.3
+Nuremberg
+13 minutes ago
+ubuntu-32gb-nbg1-2
+CX53 | x86 | 320 GB | eu-central
+188.245.248.89
+10.0.0.4
+Nuremberg
+13 minutes ago
+ubuntu-32gb-nbg1-3
+CX53 | x86 | 320 GB | eu-central
+157.90.230.96
+10.0.0.5
+Nuremberg
+13 minutes ago
+Back
+Legal NoticeData PrivacySystem PoliciesTerms and Conditions

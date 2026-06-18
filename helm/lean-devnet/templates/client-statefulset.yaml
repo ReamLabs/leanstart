@@ -98,6 +98,22 @@ spec:
             seccompProfile:
               type: Unconfined
           {{- end }}
+          # leanMultisig bakes NUM_THREADS at build time from the builder's core
+          # count via system-info/build.rs (available_parallelism, cgroup-aware).
+          # The aggregation prover asserts that baked count == runtime cores, so a
+          # custom ream image must be built to match the aggregator nodes' core
+          # count. If the image's NUM_THREADS differs, cap CPU via --set cpuLimit=N
+          # so available_parallelism (quota-aware) matches. Default: no cap (the
+          # 16-thread image matches the 16-core aggregator nodes; proving memory is
+          # ~5.8GB/pod regardless of threads, so density is bounded by RAM not CPU:
+          # run 1 validator per 15GB box). Set --set cpuLimit=N to cap.
+          {{- if $.Values.cpuLimit }}
+          resources:
+            requests:
+              cpu: {{ $.Values.cpuRequest | default $.Values.cpuLimit | quote }}
+            limits:
+              cpu: {{ $.Values.cpuLimit | quote }}
+          {{- end }}
           ports:
             - containerPort: 9000
               protocol: UDP

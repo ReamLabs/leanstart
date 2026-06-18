@@ -77,3 +77,80 @@ pub fn generate_hash_sig_keys(
     );
     Ok(())
 }
+
+/// Materialize hash-sig keys for `num_validators` by copying from a pre-generated
+/// pool (`leanstart keygen`) instead of running the slow hash-sig-cli Docker keygen.
+///
+/// hash-sig keys are deterministic, so a pool built on any machine with the same
+/// `blockblaz/hash-sig-cli` image is byte-identical — generate it once on a fast
+/// laptop and reuse it for every (much slower) server deploy. The pool MUST have
+/// been generated with the same `active_epoch` (different `log_num_active_epochs`
+/// ⇒ structurally different keys) and contain at least `num_validators` — both
+/// are validated against the pool manifest so a mismatch fails loudly instead of
+/// shipping wrong keys. The full manifest is copied as-is; `filtered_manifest`
+/// slices it per-pod downstream.
+pub fn copy_keys_from_pool(
+    pool_dir: &Path,
+    num_validators: u32,
+    active_epoch: u32,
+    output_dir: &Path,
+) -> Result<()> {
+    let pool_keys = pool_dir.join("hash-sig-keys");
+    let manifest = pool_keys.join("validator-keys-manifest.yaml");
+    let manifest_text = fs::read_to_string(&manifest).with_context(|| {
+        format!(
+            "Failed to read pool manifest {} (did you run `leanstart keygen --output {}`?)",
+            manifest.display(),
+            pool_dir.display()
+        )
+    })?;
+
+    // Different log_num_active_epochs ⇒ different keys; refuse a silent mismatch.
+    let want = format!("log_num_active_epochs: {active_epoch}");
+    if !manifest_text.lines().any(|line| line.trim() == want) {
+        let got = manifest_text
+            .lines()
+            .find(|line| line.trim_start().starts_with("log_num_active_epochs:"))
+            .map(str::trim)
+            .unwrap_or("<none>");
+        bail!(
+            "Key pool active_epoch mismatch: deploy wants `{want}` but pool has `{got}`. \
+             Regenerate with `leanstart keygen --active-epoch {active_epoch}`."
+        );
+    }
+
+    let pool_count = manifest_text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("num_validators:"))
+        .and_then(|n| n.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    if pool_count < num_validators {
+        bail!(
+            "Key pool too small: need {num_validators} validators but pool has {pool_count}. \
+             Regenerate with `leanstart keygen --count {num_validators}`."
+        );
+    }
+
+    // Only the `.ssz` keys are consumed downstream (injection ships
+    // `validator_N_*_key_sk.ssz`; pubkeys are carried inline in the manifest).
+    // The `.json` exports are ~55 MB each and unused, so we skip them — keeping
+    // a pool materialization cheap and the on-disk pool ~7x smaller.
+    let keys_dir = output_dir.join("hash-sig-keys");
+    fs::create_dir_all(&keys_dir)?;
+    for v in 0..num_validators {
+        for role in ["attester", "proposer"] {
+            for kind in ["pk", "sk"] {
+                let name = format!("validator_{v}_{role}_key_{kind}.ssz");
+                let src = pool_keys.join(&name);
+                fs::copy(&src, keys_dir.join(&name))
+                    .with_context(|| format!("Failed to copy pool key {}", src.display()))?;
+            }
+        }
+    }
+    fs::copy(&manifest, keys_dir.join("validator-keys-manifest.yaml"))?;
+    println!(
+        "Materialized hash-sig keys for {num_validators} validators from pool {} (active_epoch=2^{active_epoch})",
+        pool_dir.display()
+    );
+    Ok(())
+}

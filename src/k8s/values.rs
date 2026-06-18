@@ -84,20 +84,22 @@ pub fn generate_helm_values(
     } else {
         None
     };
-    let aggregate_subnet_ids = if multi_subnet {
-        Some(
-            (0..spec.subnets)
-                .map(|i| i.to_string())
-                .collect::<Vec<_>>()
-                .join(","),
-        )
-    } else {
-        None
-    };
-
     for entry in vc.validators.iter() {
         let client_def = get_client(&entry.client)
             .ok_or_else(|| anyhow::anyhow!("Unknown client: {}", entry.client))?;
+
+        // Each aggregator aggregates ONLY its own subnet's committee (matching
+        // ethlambda's one-aggregator-per-subnet model). Previously every
+        // aggregator was handed all subnet ids (0,1,2,3), so each subscribed to
+        // and tried to aggregate every committee — ballooning per-aggregator work
+        // and gossip load and leaving `new` under-covered. Scope it to this node's
+        // own subnet so the N subnet aggregators together cover all committees and
+        // each produces one cheap aggregate that lands in time.
+        let aggregate_subnet_ids = if multi_subnet && entry.is_aggregator {
+            Some(entry.subnet.to_string())
+        } else {
+            None
+        };
 
         let args = build_args(
             client_def,
