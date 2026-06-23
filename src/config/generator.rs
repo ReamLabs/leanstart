@@ -76,33 +76,56 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
         );
     }
 
+    // Multi-subnet needs one validator per pod: leanSpec maps each validator to
+    // a committee by `validator_index % committee_count`, but a pod gets a
+    // contiguous id block, which for more than one validator would straddle
+    // committees.
+    if spec.subnets > 1 && spec.validators_per_pod > 1 {
+        bail!(
+            "multi-subnet (subnets={}) with validators-per-pod={} is not supported: leanSpec \
+             assigns committees by validator_index % committee_count, which requires one \
+             validator per pod so each pod maps to exactly one committee. Use \
+             --validators-per-pod 1 for multi-subnet.",
+            spec.subnets,
+            spec.validators_per_pod
+        );
+    }
+
     let mut validators = Vec::new();
     let mut global_pod_index: u32 = 0;
     let multi_subnet = spec.subnets > 1;
 
-    for subnet_idx in 0..spec.subnets {
-        let mut first_pod_in_subnet = true;
+    // Loop client -> pod -> subnet, with subnet as the innermost loop, so
+    // consecutive validator ids interleave across subnets. This lines the ids
+    // up with leanSpec's committee assignment, which is `id % committee_count`.
+    //
+    // For example, clients ream and zeam across 2 subnets get ids in this order:
+    //   ream: id 0 -> subnet 0 (aggregator), id 1 -> subnet 1 (aggregator)
+    //   zeam: id 2 -> subnet 0, id 3 -> subnet 1
+    // so every validator's id % 2 equals its subnet, and the two aggregators
+    // (ream's first pod) land in different committees -- one per subnet.
+    for (client_idx, client) in spec.clients.iter().enumerate() {
+        let client_name = &client.name;
+        let validator_count = client.instances * spec.validators_per_pod;
+        let client_def = get_client(client_name)
+            .with_context(|| format!("Unknown client: {client_name}"))?;
 
-        // Iterate the client allocations directly (rather than validator_counts())
-        // so each entry can carry its `@host` placement. All subnet replicas of a
-        // pinned client land on the same host.
-        for client in &spec.clients {
-            let client_name = &client.name;
-            let validator_count = client.instances * spec.validators_per_pod;
-            let client_def = get_client(client_name)
-                .with_context(|| format!("Unknown client: {client_name}"))?;
+        if validator_count == 0 {
+            bail!("Client {client_name} has 0 validators allocated");
+        }
 
-            if validator_count == 0 {
-                bail!("Client {client_name} has 0 validators allocated");
-            }
+        let pod_count = validator_count.div_ceil(spec.validators_per_pod);
+        let mut remaining = validator_count;
 
-            let pod_count = validator_count.div_ceil(spec.validators_per_pod);
-            let mut remaining = validator_count;
+        for pod_idx in 0..pod_count {
+            let count = remaining.min(spec.validators_per_pod);
+            remaining -= count;
 
-            for pod_idx in 0..pod_count {
-                let count = remaining.min(spec.validators_per_pod);
-                remaining -= count;
+            // The aggregator of every subnet is the first pod of the first
+            // client; the interleaving puts each one in a distinct committee.
+            let is_aggregator = client_idx == 0 && pod_idx == 0;
 
+            for subnet_idx in 0..spec.subnets {
                 let name = if multi_subnet {
                     format!("{client_name}_s{subnet_idx}_p{pod_idx}")
                 } else {
@@ -127,14 +150,13 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
                     } else {
                         None
                     },
-                    is_aggregator: first_pod_in_subnet,
+                    is_aggregator,
                     subnet: subnet_idx,
                     count,
                 };
 
                 validators.push(entry);
                 global_pod_index += 1;
-                first_pod_in_subnet = false;
             }
         }
     }
