@@ -88,6 +88,78 @@ fn test_generate_multi_instance() {
 }
 
 #[test]
+fn test_multi_subnet_interleaves_ids_to_match_spec_committees() {
+    // leanSpec assigns a validator's committee as `validator_index % committee_count`
+    // (== subnets), and the genesis tool assigns ids in `vc.validators` order.
+    // So the Vec must interleave subnets: id i belongs to subnet i % subnets,
+    // ensuring each subnet's aggregator lands in a distinct committee.
+    let mut spec = test_spec(vec![("ream", 2)]);
+    spec.subnets = 2;
+    spec.attestation_committee_count = Some(2);
+    let vc = generate_validator_config(&spec).unwrap();
+    let subnets = spec.subnets as usize;
+
+    // Every validator's position (== its validator index) must satisfy
+    // id % subnets == its subnet, so subnet k == committee k.
+    for (id, v) in vc.validators.iter().enumerate() {
+        assert_eq!(
+            id % subnets,
+            v.subnet as usize,
+            "validator id {id} ({}) lands in committee {} but is tagged subnet {}",
+            v.name,
+            id % subnets,
+            v.subnet
+        );
+    }
+
+    // Concretely: the two aggregators (first pod of each subnet) must occupy
+    // distinct committees -- the exact thing that was broken before.
+    let agg_ids: Vec<usize> = vc
+        .validators
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.is_aggregator)
+        .map(|(id, _)| id % subnets)
+        .collect();
+    assert_eq!(
+        agg_ids,
+        vec![0, 1],
+        "each subnet's aggregator must be in its own committee"
+    );
+}
+
+#[test]
+fn test_multi_subnet_spreads_aggregator_across_clients() {
+    // With multiple clients, each subnet's aggregator is the first pod of a
+    // different client (round-robin), so the role isn't concentrated on one.
+    let mut spec = test_spec(vec![("ream", 1), ("zeam", 1)]);
+    spec.subnets = 2;
+    spec.attestation_committee_count = Some(2);
+    let vc = generate_validator_config(&spec).unwrap();
+
+    let mut aggs: Vec<(u32, &str)> = vc
+        .validators
+        .iter()
+        .filter(|v| v.is_aggregator)
+        .map(|v| (v.subnet, v.client.as_str()))
+        .collect();
+    aggs.sort();
+    // subnet 0 -> first client (ream), subnet 1 -> second client (zeam).
+    assert_eq!(aggs, vec![(0, "ream"), (1, "zeam")]);
+}
+
+#[test]
+fn test_multi_subnet_with_multiple_validators_per_pod_errors() {
+    // More than one validator per pod would split a pod's contiguous id block
+    // across committees.
+    let mut spec = test_spec(vec![("ream", 2)]);
+    spec.subnets = 2;
+    spec.validators_per_pod = 2;
+    spec.attestation_committee_count = Some(2);
+    assert!(generate_validator_config(&spec).is_err());
+}
+
+#[test]
 fn test_deterministic_privkeys() {
     let spec = test_spec(vec![("ethlambda", 1), ("qlean", 1)]);
     let vc1 = generate_validator_config(&spec).unwrap();
