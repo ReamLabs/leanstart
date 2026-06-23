@@ -100,10 +100,10 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
     // up with leanSpec's committee assignment, which is `id % committee_count`.
     //
     // For example, clients ream and zeam across 2 subnets get ids in this order:
-    //   ream: id 0 -> subnet 0 (aggregator), id 1 -> subnet 1 (aggregator)
-    //   zeam: id 2 -> subnet 0, id 3 -> subnet 1
-    // so every validator's id % 2 equals its subnet, and the two aggregators
-    // (ream's first pod) land in different committees -- one per subnet.
+    //   ream: id 0 -> subnet 0 (aggregator), id 1 -> subnet 1
+    //   zeam: id 2 -> subnet 0, id 3 -> subnet 1 (aggregator)
+    // so every validator's id % 2 equals its subnet, and the aggregator role is
+    // spread across clients -- ream aggregates subnet 0, zeam subnet 1.
     for (client_idx, client) in spec.clients.iter().enumerate() {
         let client_name = &client.name;
         let validator_count = client.instances * spec.validators_per_pod;
@@ -121,11 +121,14 @@ pub fn generate_validator_config(spec: &DevnetSpec) -> Result<ValidatorConfig> {
             let count = remaining.min(spec.validators_per_pod);
             remaining -= count;
 
-            // The aggregator of every subnet is the first pod of the first
-            // client; the interleaving puts each one in a distinct committee.
-            let is_aggregator = client_idx == 0 && pod_idx == 0;
-
             for subnet_idx in 0..spec.subnets {
+                // Spread the aggregator role across clients: each subnet's
+                // aggregator is the first pod of a different client, round-robin
+                // (subnet k -> client k mod number-of-clients). The interleaving
+                // puts that pod in subnet k's committee.
+                let is_aggregator =
+                    pod_idx == 0 && client_idx == subnet_idx as usize % spec.clients.len();
+
                 let name = if multi_subnet {
                     format!("{client_name}_s{subnet_idx}_p{pod_idx}")
                 } else {
