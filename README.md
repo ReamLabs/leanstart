@@ -5,7 +5,7 @@ A local devnet orchestrator for [Lean Ethereum](https://ethresear.ch/t/lean-ethe
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/shariqnaiyer/leanstart/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ReamLabs/leanstart/master/install.sh | bash
 ```
 
 Works on **macOS** (x86_64 + Apple Silicon) and **Linux** (x86_64 + aarch64). Installs: **Rust**, **kind**, **kubectl**, **helm**, **Docker**, and the `leanstart` binary. Safe to re-run.
